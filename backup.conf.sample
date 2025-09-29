@@ -1,0 +1,57 @@
+#!/bin/sh
+
+# ==============================================================================
+# backup.conf.sample
+#
+# INSTRUCTIONS:
+# 1. Copy this file to 'backup.conf'
+#    cp backup.conf.sample backup.conf
+# 2. Edit 'backup.conf' with your actual settings.
+#
+# ==============================================================================
+
+# The main destination directory where all live rsync mirrors will be stored.
+# This directory holds the most recent version of your files for quick access.
+# Example: "/mnt/backups/live"
+BACKUP_DEST="/path/to/your/backup_destination"
+
+# A space-separated list of remote directories to back up.
+# Format: "user@host:/path/to/source"
+# Example: "admin@server1.example.com:/var/www/ admin@server2.example.com:/home/user/documents/"
+BACKUP_TARGETS="user@your_server:/path/to/backup"
+
+# [OPTIONAL] Absolute path to the private SSH key for passwordless connection.
+# Leave this empty to use the default key of the user running the script (e.g., ~/.ssh/id_rsa).
+# Use this if you need to specify a different key, for instance, if running as root.
+# Example: "/home/backup_user/.ssh/id_rsa_server1"
+SSH_KEY_PATH=""
+
+# Email address to receive the backup status report.
+# Example: "your_email@example.com"
+REPORT_EMAIL="your_email@example.com"
+
+# Directory where log files will be stored.
+# Example: "/var/log/r-chive"
+LOG_DIR="/var/log/rsync_backup"
+
+# --- Granular Archive Configuration ---
+
+# Set to "yes" to create a compressed .tar.zst archive for each backup target after a successful sync.
+# This is highly recommended for historical versioning.
+CREATE_ARCHIVE="yes"
+
+# The parent directory where all historical, versioned archives will be stored.
+# Archives will be organized by host, year, and month (e.g., /mnt/backups/archives/server1.example.com/2023/12/).
+# Example: "/mnt/backups/archives"
+ARCHIVE_DEST="/path/to/your/archive_destination"
+
+# Number of archives to keep per backup target. The oldest archives will be deleted.
+# Set to 0 to disable the retention policy and keep all archives indefinitely.
+# Example: 30  (keeps the last 30 archives for each target)
+ARCHIVE_RETENTION_COUNT=6
+
+# [RECOMMENDED] Number of days to keep archives. Archives older than this will be deleted.
+# This setting takes precedence over ARCHIVE_RETENTION_COUNT.
+# If set to a value greater than 0, the script will use this policy. Otherwise, it will fall back to ARCHIVE_RETENTION_COUNT.
+# Example: 30 (keeps archives for 30 days)
+ARCHIVE_RETENTION_DAYS=0
