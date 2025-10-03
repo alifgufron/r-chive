@@ -93,221 +93,187 @@ fi
 log_message "================== Starting Rsync Backup Process =================="
 REPORT_BODY="Rsync Backup Report - $(date +'%Y-%m-%d %H:%M:%S')\n\n"
 
-# --- Backup Loop per Target (Parallel Execution) ---
+# Process the backup targets to allow for multi-line and comments in the config.
+# This filters out lines starting with '#' and any empty lines.
+PROCESSED_TARGETS=$(echo "${BACKUP_TARGETS}" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$')
+
+# Check if there are any targets to process after filtering.
+if [ -z "${PROCESSED_TARGETS}" ]; then
+    log_message "No backup targets are defined or all are commented out. Exiting."
+    exit 0
+fi
 
 # Create a temporary directory to store job outputs and PIDs
 JOB_DIR=$(mktemp -d)
 trap 'rm -rf "${JOB_DIR}"' EXIT HUP INT QUIT TERM
 
-PID_LIST=""
+# --- Main Loop: Process server by server ---
+GLOBAL_PROCESS_STATUS="SUCCESS"
+UNIQUE_HOSTS=$(echo "${PROCESSED_TARGETS}" | cut -d':' -f1 | cut -d'@' -f2 | sort -u)
 
-for target in ${BACKUP_TARGETS}; do
-    # Unique identifier for the job based on the target
-    JOB_ID=$(echo "${target}" | md5)
-    
-    # Run the backup for each target in a subshell in the background
-    ( 
-        # Parse the target string: user@host:/path/source
-        USER_HOST=$(echo "${target}" | cut -d':' -f1)
-        REMOTE_SOURCE=$(echo "${target}" | cut -d':' -f2-)
-        HOST=$(echo "${USER_HOST}" | cut -d'@' -f2)
+for HOST in ${UNIQUE_HOSTS}; do
+    HOST_START_TIME=$(date +%s)
+    log_message "================== Starting Backup for Host: ${HOST} =================="
 
-        log_message "Starting backup for target: ${target}"
-
-        # Create a clean destination path that mimics the source structure.
-        REMOTE_SOURCE_TEMP="${REMOTE_SOURCE#/}"
-        SANITISED_SOURCE_PATH="${REMOTE_SOURCE_TEMP%/}"
-        TARGET_DEST="${BACKUP_DEST}/${HOST}/${SANITISED_SOURCE_PATH}"
-
-        mkdir -p "${TARGET_DEST}"
-
-        RSYNC_OUTPUT_FILE="${JOB_DIR}/${JOB_ID}.output"
-
-        # Set up SSH options
-        SSH_OPTIONS=""
-        if [ -n "$SSH_KEY_PATH" ]; then
-            SSH_OPTIONS="-i ${SSH_KEY_PATH}"
-        fi
-
-        # Execute rsync
-        rsync -az --delete --stats --itemize-changes ${RSYNC_EXTRA_OPTS} \
-              -e "ssh ${SSH_OPTIONS}" \
-              "${target}" \
-              "${TARGET_DEST}" > "${RSYNC_OUTPUT_FILE}" 2>&1
+    # --- Start all backup jobs for the current host in parallel ---
+    HOST_TARGETS=$(echo "${PROCESSED_TARGETS}" | grep "@${HOST}:")
+    PID_LIST=""
+    for target in ${HOST_TARGETS}; do
+        JOB_ID=$(echo "${target}" | md5)
         
-        # Save the exit code
-        echo $? > "${JOB_DIR}/${JOB_ID}.exitcode"
+        # Run the backup for each target in a subshell in the background
+        ( 
+            # Parse the target string: user@host:/path/source
+            USER_HOST=$(echo "${target}" | cut -d':' -f1)
+            REMOTE_SOURCE=$(echo "${target}" | cut -d':' -f2-)
 
-    ) & # Run in background
+            log_message "Starting backup for target: ${target}"
 
-    # Store the PID of the background process
-    PID_LIST="${PID_LIST} $!"
-done
+            # Clean the remote path by removing trailing slashes so basename/dirname work reliably.
+            REMOTE_SOURCE_CLEAN=$(echo "${REMOTE_SOURCE}" | sed 's:/*$::')
+            REMOTE_BASENAME=$(basename "${REMOTE_SOURCE_CLEAN}")
+            REMOTE_DIRNAME=$(dirname "${REMOTE_SOURCE_CLEAN}")
 
-# Wait for all background rsync jobs to finish
-log_message "Waiting for all backup jobs to complete..."
-for pid in ${PID_LIST}; do
-    wait "${pid}"
-done
-log_message "All backup jobs have finished. Processing results..."
+            # The rsync destination is the *parent* directory.
+            RSYNC_DEST="${BACKUP_DEST}/${HOST}${REMOTE_DIRNAME}"
+            RSYNC_SOURCE="${USER_HOST}:${REMOTE_SOURCE_CLEAN}"
+            TARGET_DEST="${RSYNC_DEST}/${REMOTE_BASENAME}"
 
+            mkdir -p "${RSYNC_DEST}"
+            RSYNC_OUTPUT_FILE="${JOB_DIR}/${JOB_ID}.output"
 
-# --- Process Results and Create Archives ---
-for target in ${BACKUP_TARGETS}; do
-    JOB_ID=$(echo "${target}" | md5)
-    USER_HOST=$(echo "${target}" | cut -d':' -f1)
-    REMOTE_SOURCE=$(echo "${target}" | cut -d':' -f2-)
-    HOST=$(echo "${USER_HOST}" | cut -d'@' -f2)
+            SSH_OPTIONS=""
+            [ -n "$SSH_KEY_PATH" ] && SSH_OPTIONS="-i ${SSH_KEY_PATH}"
 
-    # Re-calculate the destination path for the archive and retention logic
-    REMOTE_SOURCE_TEMP="${REMOTE_SOURCE#/}"
-    SANITISED_SOURCE_PATH="${REMOTE_SOURCE_TEMP%/}"
-    TARGET_DEST="${BACKUP_DEST}/${HOST}/${SANITISED_SOURCE_PATH}"
-
-    RSYNC_EXIT_CODE=$(cat "${JOB_DIR}/${JOB_ID}.exitcode")
-    RSYNC_STATS=$(cat "${JOB_DIR}/${JOB_ID}.output")
-    REPORT_BODY="${REPORT_BODY}--------------------------------------------------\n"
-
-    if [ ${RSYNC_EXIT_CODE} -eq 0 ]; then
-        log_message "Backup for target ${target} SUCCESS."
-        REPORT_BODY="${REPORT_BODY}${ICON_SUCCESS} Target: ${target}\n"
-        REPORT_BODY="${REPORT_BODY}Status: SUCCESS\n"
-
-        # --- Per-Target Archive Creation (Optional) ---
-        if [ "${CREATE_ARCHIVE}" = "yes" ]; then
-            log_message "--- Starting Archive Creation for target ${target} ---"
+            # Execute rsync
+            rsync -az --delete --stats --itemize-changes ${RSYNC_EXTRA_OPTS} \
+                  -e "ssh ${SSH_OPTIONS}" \
+                  "${RSYNC_SOURCE}" \
+                  "${RSYNC_DEST}" > "${RSYNC_OUTPUT_FILE}" 2>&1
             
-            # Sanitize the remote path to get just the last folder name for the filename
-            SANITISED_FILENAME_PART=$(basename "${REMOTE_SOURCE}")
+            echo $? > "${JOB_DIR}/${JOB_ID}.exitcode"
 
-            YEAR=$(date +'%Y')
-            MONTH=$(date +'%m')
-            ARCHIVE_DIR="${ARCHIVE_DEST}/${HOST}/${YEAR}/${MONTH}"
-            mkdir -p "${ARCHIVE_DIR}"
+        ) & # Run in background
 
-            ARCHIVE_FILE="${ARCHIVE_DIR}/${SANITISED_FILENAME_PART}-$(date +'%Y-%m-%d_%H%M%S').tar.zst"
-            log_message "Creating compressed archive: ${ARCHIVE_FILE}"
+        PID_LIST="${PID_LIST} $!"
+    done
 
-            # Tar the specific target's destination directory to create a clean archive
-            tar --zstd -cf "${ARCHIVE_FILE}" -C "${TARGET_DEST}" .
+    # --- Wait for all jobs for THIS HOST to complete ---
+    log_message "Waiting for all backup jobs on host ${HOST} to complete..."
+    for pid in ${PID_LIST}; do
+        wait "${pid}"
+    done
+    HOST_END_TIME=$(date +%s)
+    log_message "All backup jobs for host ${HOST} have finished."
 
-            if [ $? -eq 0 ]; then
-                ARCHIVE_SIZE=$(du -h "${ARCHIVE_FILE}" | cut -f1)
-                log_message "Archive for target ${target} created successfully. Size: ${ARCHIVE_SIZE}"
-                REPORT_BODY="${REPORT_BODY}Archive Status: SUCCESS - ${ARCHIVE_FILE} (Size: ${ARCHIVE_SIZE})\n"
+    # --- Process results and send report for the current host ---
+    log_message "Processing results for host: ${HOST}"
+    HOST_OVERALL_STATUS="SUCCESS"
+    HOST_REPORT_BODY="Rsync Backup Report for Host: ${HOST} - $(date +'%Y-%m-%d %H:%M:%S')\n\n"
+    HOST_PROCESSED_TARGETS_LIST=""
 
-                # --- Retention Policy ---
-                # The script supports two retention policies: by days (recommended) or by count.
+    for target in ${HOST_TARGETS}; do
+        JOB_ID=$(echo "${target}" | md5)
+        REMOTE_SOURCE=$(echo "${target}" | cut -d':' -f2-)
 
-                # Policy 1: Retention by Days (takes precedence)
-                if [ -n "${ARCHIVE_RETENTION_DAYS}" ] && [ "${ARCHIVE_RETENTION_DAYS}" -gt 0 ]; then
-                    log_message "Retention Policy: Deleting archives for target '${target}' older than ${ARCHIVE_RETENTION_DAYS} days."
-                    
-                    # Find and delete archives for the specific target that are older than the specified number of days.
-                    find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f -mtime "+${ARCHIVE_RETENTION_DAYS}" -print -delete | while IFS= read -r file_to_delete; do
-                        if [ -n "$file_to_delete" ]; then
-                            log_message "Retention (by day): Deleted old archive: $file_to_delete"
+        REMOTE_SOURCE_CLEAN=$(echo "${REMOTE_SOURCE}" | sed 's:/*$::')
+        REMOTE_BASENAME=$(basename "${REMOTE_SOURCE_CLEAN}")
+        REMOTE_DIRNAME=$(dirname "${REMOTE_SOURCE_CLEAN}")
+        TARGET_DEST="${BACKUP_DEST}/${HOST}${REMOTE_DIRNAME}/${REMOTE_BASENAME}"
+
+        RSYNC_EXIT_CODE=$(cat "${JOB_DIR}/${JOB_ID}.exitcode")
+        RSYNC_STATS=$(cat "${JOB_DIR}/${JOB_ID}.output")
+        HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
+
+        if [ ${RSYNC_EXIT_CODE} -eq 0 ]; then
+            log_message "Backup for target ${target} SUCCESS."
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_SUCCESS} Target: ${target}\n"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
+
+            if [ "${CREATE_ARCHIVE}" = "yes" ]; then
+                log_message "--- Starting Archive Creation for target ${target} ---"
+                SANITISED_FILENAME_PART=$(basename "${REMOTE_SOURCE}")
+                YEAR=$(date +'%Y'); MONTH=$(date +'%m')
+                ARCHIVE_DIR="${ARCHIVE_DEST}/${HOST}/${YEAR}/${MONTH}"
+                mkdir -p "${ARCHIVE_DIR}"
+                ARCHIVE_FILE="${ARCHIVE_DIR}/${SANITISED_FILENAME_PART}-$(date +'%Y-%m-%d_%H%M%S').tar.zst"
+                log_message "Creating compressed archive: ${ARCHIVE_FILE}"
+                tar --zstd -cf "${ARCHIVE_FILE}" -C "${TARGET_DEST}" .
+
+                if [ $? -eq 0 ]; then
+                    ARCHIVE_SIZE=$(du -h "${ARCHIVE_FILE}" | cut -f1)
+                    log_message "Archive for target ${target} created successfully. Size: ${ARCHIVE_SIZE}"
+                    HOST_REPORT_BODY="${HOST_REPORT_BODY}Archive Status: SUCCESS - ${ARCHIVE_FILE} (Size: ${ARCHIVE_SIZE})\n"
+
+                    if [ -n "${ARCHIVE_RETENTION_DAYS}" ] && [ "${ARCHIVE_RETENTION_DAYS}" -gt 0 ]; then
+                        log_message "Retention Policy: Deleting archives for target '${target}' older than ${ARCHIVE_RETENTION_DAYS} days."
+                        find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f -mtime "+${ARCHIVE_RETENTION_DAYS}" -print -delete | while IFS= read -r f; do [ -n "$f" ] && log_message "Retention (by day): Deleted old archive: $f"; done
+                    elif [ -n "${ARCHIVE_RETENTION_COUNT}" ] && [ "${ARCHIVE_RETENTION_COUNT}" -gt 0 ]; then
+                        ARCHIVES_FOUND=$(find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f)
+                        COUNT=$(echo "${ARCHIVES_FOUND}" | wc -l)
+                        if [ "$COUNT" -gt "$ARCHIVE_RETENTION_COUNT" ]; then
+                            NUM_TO_DELETE=$((COUNT - ARCHIVE_RETENTION_COUNT))
+                            log_message "Retention Policy (by count): Found ${COUNT} archives, limit is ${ARCHIVE_RETENTION_COUNT}. Deleting ${NUM_TO_DELETE} oldest."
+                            find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f -exec stat -f '%m %N' {} + | sort -n | head -n "${NUM_TO_DELETE}" | cut -d' ' -f2- | while IFS= read -r f; do [ -n "$f" ] && log_message "Retention (by count): Deleting old archive: $f" && rm -f "$f"; done
                         fi
-                    done
-
-                # Policy 2: Retention by Count (fallback)
-                elif [ -n "${ARCHIVE_RETENTION_COUNT}" ] && [ "${ARCHIVE_RETENTION_COUNT}" -gt 0 ]; then
-                    # Find all archives for this specific target
-                    ARCHIVES_FOUND=$(find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f)
-                    COUNT=$(echo "${ARCHIVES_FOUND}" | wc -l)
-
-                    if [ "$COUNT" -gt "$ARCHIVE_RETENTION_COUNT" ]; then
-                        NUM_TO_DELETE=$((COUNT - ARCHIVE_RETENTION_COUNT))
-                        log_message "Retention Policy (by count): Found ${COUNT} archives for target '${target}', limit is ${ARCHIVE_RETENTION_COUNT}. Deleting ${NUM_TO_DELETE} oldest archive(s)."
-                        
-                        # Find, sort by modification time (oldest first), get the ones to delete, and remove safely
-                        find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f -exec stat -f '%m %N' {} + | \
-                        sort -n | \
-                        head -n "${NUM_TO_DELETE}" | \
-                        cut -d' ' -f2- | \
-                        while IFS= read -r file_to_delete; do
-                            if [ -n "$file_to_delete" ]; then
-                                log_message "Retention (by count): Deleting old archive: $file_to_delete"
-                                rm -f "$file_to_delete"
-                            fi
-                        done
                     fi
+                else
+                    log_message "ERROR: Failed to create archive for target ${target}."
+                    HOST_REPORT_BODY="${HOST_REPORT_BODY}Archive Status: FAILED\n"
                 fi
-            else
-                log_message "ERROR: Failed to create archive for target ${target}."
-                REPORT_BODY="${REPORT_BODY}Archive Status: FAILED\n"
             fi
+        else
+            log_message "ERROR: Backup for target ${target} FAILED with exit code ${RSYNC_EXIT_CODE}."
+            HOST_OVERALL_STATUS="ERROR"
+            GLOBAL_PROCESS_STATUS="ERROR"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_FAIL} Target: ${target}\n"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: FAILED (Code: ${RSYNC_EXIT_CODE})\n"
         fi
-    else
-        log_message "ERROR: Backup for target ${target} FAILED with exit code ${RSYNC_EXIT_CODE}."
-        OVERALL_STATUS="ERROR"
-        REPORT_BODY="${REPORT_BODY}${ICON_FAIL} Target: ${target}\n"
-        REPORT_BODY="${REPORT_BODY}Status: FAILED (Code: ${RSYNC_EXIT_CODE})\n"
+
+        HOST_REPORT_BODY="${HOST_REPORT_BODY}\nChange Details & Statistics:\n${RSYNC_STATS}\n\n"
+        HOST_PROCESSED_TARGETS_LIST="${HOST_PROCESSED_TARGETS_LIST}  ${ICON_TARGET} ${target}\n"
+    done
+
+    # --- Finalize and send email for THIS HOST ---
+    HOST_DURATION=$((HOST_END_TIME - HOST_START_TIME))
+    H_DAYS=$((HOST_DURATION / 86400)); H_HOURS=$(( (HOST_DURATION % 86400) / 3600 )); H_MINUTES=$(( (HOST_DURATION % 3600) / 60 )); H_SECONDS=$((HOST_DURATION % 60))
+    HOST_FORMATTED_DURATION=$(printf "%d days, %02d hours, %02d minutes, %02d seconds" ${H_DAYS} ${H_HOURS} ${H_MINUTES} ${H_SECONDS})
+
+    SUBJECT_TAG=""; DRY_RUN_HEADER=""
+    if [ "${DRY_RUN_MODE}" = "yes" ]; then
+        SUBJECT_TAG="[DRY RUN] "
+        DRY_RUN_HEADER="⚠️ WARNING: DRY RUN MODE ENABLED. NO CHANGES WERE MADE. ⚠️\n\n"
     fi
 
-    REPORT_BODY="${REPORT_BODY}\nChange Details & Statistics:\n"
-    REPORT_BODY="${REPORT_BODY}${RSYNC_STATS}\n\n"
+    FINAL_STATUS_ICON="${ICON_SUCCESS}"
+    if [ "${HOST_OVERALL_STATUS}" = "ERROR" ]; then FINAL_STATUS_ICON="${ICON_FAIL}"; fi
 
-    PROCESSED_TARGETS_LIST="${PROCESSED_TARGETS_LIST}  ${ICON_TARGET} ${target}\n"
-    # No need to remove the output file here, the JOB_DIR will be cleaned up at the end.
+    REPORT_HEADER="${DRY_RUN_HEADER}"
+    REPORT_HEADER="${REPORT_HEADER}${ICON_INFO} Backup Summary for Host: ${HOST}\n"
+    REPORT_HEADER="${REPORT_HEADER}${FINAL_STATUS_ICON} Overall Status: ${HOST_OVERALL_STATUS}\n"
+    REPORT_HEADER="${REPORT_HEADER}${ICON_CLOCK} Total Duration for Host: ${HOST_FORMATTED_DURATION}\n"
+    REPORT_HEADER="${REPORT_HEADER}\nProcessed Targets on this Host:\n${HOST_PROCESSED_TARGETS_LIST}\n"
+
+    log_message "Constructing and sending email report for host ${HOST}..."
+    FROM_EMAIL="backup-reporter@$(hostname)"
+    EMAIL_SUBJECT="Rsync Backup Report for ${HOST} from $(hostname) - ${SUBJECT_TAG}Status: ${HOST_OVERALL_STATUS} ${FINAL_STATUS_ICON}"
+
+    (   echo "From: ${FROM_EMAIL}"; echo "To: ${REPORT_EMAIL}"; echo "Subject: ${EMAIL_SUBJECT}";
+        echo "MIME-Version: 1.0"; echo "Content-Type: text/plain; charset=UTF-8"; echo "";
+        echo -e "${REPORT_HEADER}${HOST_REPORT_BODY}"
+    ) | /usr/sbin/sendmail -t
+
+    log_message "Email report command executed for host ${HOST} to ${REPORT_EMAIL}."
 done
 
-
-# --- Finalization and Report ---
+# --- Finalization ---
 END_TIME=$(date +%s)
 TOTAL_DURATION=$((END_TIME - START_TIME))
-DAYS=$((TOTAL_DURATION / 86400))
-HOURS=$(( (TOTAL_DURATION % 86400) / 3600 ))
-MINUTES=$(( (TOTAL_DURATION % 3600) / 60 ))
-SECONDS=$((TOTAL_DURATION % 60))
+DAYS=$((TOTAL_DURATION / 86400)); HOURS=$(( (TOTAL_DURATION % 86400) / 3600 )); MINUTES=$(( (TOTAL_DURATION % 3600) / 60 )); SECONDS=$((TOTAL_DURATION % 60))
 FORMATTED_DURATION=$(printf "%d days, %02d hours, %02d minutes, %02d seconds" ${DAYS} ${HOURS} ${MINUTES} ${SECONDS})
 
-log_message "================== Backup Process Finished =================="
-log_message "Overall Status: ${OVERALL_STATUS}"
-log_message "Total Backup Time: ${FORMATTED_DURATION}"
-
-# Customize subject and header for dry run
-SUBJECT_TAG=""
-DRY_RUN_HEADER=""
-if [ "${DRY_RUN_MODE}" = "yes" ]; then
-    SUBJECT_TAG="[DRY RUN] "
-    DRY_RUN_HEADER="⚠️ WARNING: DRY RUN MODE ENABLED. NO CHANGES WERE MADE. ⚠️\n\n"
-fi
-
-# Determine overall status icon
-FINAL_STATUS_ICON="${ICON_SUCCESS}"
-if [ "${OVERALL_STATUS}" = "ERROR" ]; then
-    FINAL_STATUS_ICON="${ICON_FAIL}"
-fi
-
-# Create the report header
-REPORT_HEADER="${DRY_RUN_HEADER}"
-REPORT_HEADER="${REPORT_HEADER}${ICON_INFO} Backup Summary:\n"
-REPORT_HEADER="${REPORT_HEADER}${FINAL_STATUS_ICON} Overall Status: ${OVERALL_STATUS}\n"
-REPORT_HEADER="${REPORT_HEADER}${ICON_CLOCK} Total Duration: ${FORMATTED_DURATION}\n"
-REPORT_HEADER="${REPORT_HEADER}\nProcessed Targets:\n${PROCESSED_TARGETS_LIST}\n"
-
-# --- Send Email Report via Sendmail ---
-# Using sendmail directly for better UTF-8 and MIME support.
-log_message "Constructing and sending email report via sendmail..."
-
-# Define a From address and the subject
-FROM_EMAIL="backup-reporter@$(hostname)"
-EMAIL_SUBJECT="Rsync Backup Report from $(hostname) - ${SUBJECT_TAG}Status: ${OVERALL_STATUS} ${FINAL_STATUS_ICON}"
-
-# Construct the email with all necessary headers and pipe it to sendmail.
-# The -t flag for sendmail reads recipient info from the headers.
-(
-    echo "From: ${FROM_EMAIL}"
-    echo "To: ${REPORT_EMAIL}"
-    echo "Subject: ${EMAIL_SUBJECT}"
-    echo "MIME-Version: 1.0"
-    echo "Content-Type: text/plain; charset=UTF-8"
-    echo ""
-    echo -e "${REPORT_HEADER}${REPORT_BODY}"
-) | /usr/sbin/sendmail -t
-
-# We assume success as getting a reliable exit code from a simple pipe is tricky.
-log_message "Email report command executed for ${REPORT_EMAIL}."
+log_message "================== Entire Backup Process Finished =================="
+log_message "Global Status: ${GLOBAL_PROCESS_STATUS}"
+log_message "Total Process Time: ${FORMATTED_DURATION}"
 
 exit 0

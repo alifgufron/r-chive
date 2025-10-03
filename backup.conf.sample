@@ -15,9 +15,19 @@
 # Example: "/mnt/backups/live"
 BACKUP_DEST="/path/to/your/backup_destination"
 
-# A space-separated list of remote directories to back up.
-# Format: "user@host:/path/to/source"
-# Example: "admin@server1.example.com:/var/www/ admin@server2.example.com:/home/user/documents/"
+# A list of remote directories to back up.
+# You can list multiple targets, one per line. Lines starting with '#' are ignored.
+# This makes it easier to manage a large number of targets.
+#
+# Example:
+# BACKUP_TARGETS="
+#   # Server 1 - Web and Data
+#   admin@server1.example.com:/var/www/
+#   admin@server1.example.com:/home/user/documents/
+#
+#   # Server 2 - Databases
+#   backup@db.example.com:/var/db_backups/
+# "
 BACKUP_TARGETS="user@your_server:/path/to/backup"
 
 # [OPTIONAL] Absolute path to the private SSH key for passwordless connection.
