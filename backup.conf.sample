@@ -44,6 +44,10 @@ REPORT_EMAIL="your_email@example.com"
 # Example: "/var/log/r-chive"
 LOG_DIR="/var/log/rsync_backup"
 
+# Set to "yes" for verbose rsync logging (includes file lists).
+# The default is "no" for a quieter log.
+LOG_VERBOSE="no"
+
 # --- Granular Archive Configuration ---
 
 # Set to "yes" to create a compressed .tar.zst archive for each backup target after a successful sync.

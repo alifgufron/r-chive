@@ -145,8 +145,13 @@ for HOST in ${UNIQUE_HOSTS}; do
             SSH_OPTIONS=""
             [ -n "$SSH_KEY_PATH" ] && SSH_OPTIONS="-i ${SSH_KEY_PATH}"
 
+            RSYNC_OPTS="-azh --delete --stats --itemize-changes ${RSYNC_EXTRA_OPTS}"
+            if [ "${LOG_VERBOSE}" = "yes" ]; then
+                RSYNC_OPTS="-avzh --delete --stats --itemize-changes ${RSYNC_EXTRA_OPTS}"
+            fi
+
             # Execute rsync
-            rsync -az --delete --stats --itemize-changes ${RSYNC_EXTRA_OPTS} \
+            rsync ${RSYNC_OPTS} \
                   -e "ssh ${SSH_OPTIONS}" \
                   "${RSYNC_SOURCE}" \
                   "${RSYNC_DEST}" > "${RSYNC_OUTPUT_FILE}" 2>&1
@@ -187,6 +192,13 @@ for HOST in ${UNIQUE_HOSTS}; do
 
         if [ ${RSYNC_EXIT_CODE} -eq 0 ]; then
             log_message "Backup for target ${target} SUCCESS."
+            if [ "${LOG_VERBOSE}" = "yes" ]; then
+                (
+                    echo "--- Start Rsync Stats for ${target} ---"
+                    cat "${JOB_DIR}/${JOB_ID}.output"
+                    echo "--- End Rsync Stats for ${target} ---"
+                ) >> "${LOG_FILE}"
+            fi
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_SUCCESS} Target: ${target}\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
 
@@ -224,6 +236,11 @@ for HOST in ${UNIQUE_HOSTS}; do
             fi
         else
             log_message "ERROR: Backup for target ${target} FAILED with exit code ${RSYNC_EXIT_CODE}."
+            (
+                echo "--- Start Rsync ERROR Output for ${target} ---"
+                cat "${JOB_DIR}/${JOB_ID}.output"
+                echo "--- End Rsync ERROR Output for ${target} ---"
+            ) >> "${LOG_FILE}"
             HOST_OVERALL_STATUS="ERROR"
             GLOBAL_PROCESS_STATUS="ERROR"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_FAIL} Target: ${target}\n"
