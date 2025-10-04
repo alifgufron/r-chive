@@ -9,6 +9,7 @@ The script performs a "mirror" backup for each specified target. After a success
 ## 2. Features
 
 - **Parallel Backups**: Executes backups for all targets concurrently, significantly reducing the total backup time.
+- **Optional SSH Port**: Specify a custom SSH port directly in the backup target string (e.g., `user@host:port:/path`).
 - **Granular Archiving**: Creates a separate, clean `.tar.zst` archive for each individual backup target, making restorations fast and specific.
 - **Flexible Retention Policy**: Supports two methods for cleaning up old archives:
   - **By Time (Recommended)**: Keep archives for a specific number of days (e.g., delete all archives older than 30 days).
@@ -36,12 +37,12 @@ The script performs a "mirror" backup for each specified target. After a success
 
 ## 4. Configuration
 
-All configuration is done by editing the `backup.conf` file, which must be in the same directory as `backup_rsync.sh`.
+All configuration is done by editing the `backup.conf` file, which must be in the same directory as `r-chive.sh`.
 
 | Variable                  | Description                                                                                                                                                                                                                                                                                            |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `BACKUP_DEST`             | **Live Backup Destination.** This is the live mirror directory of your data. `rsync` syncs files here. Its content is always changing to match the source. Useful for quick restores to the latest state.                                                                  |
-| `BACKUP_TARGETS`          | A space-separated list of backup sources. Format: `"user@host:/path/to/source"`.                                                                                                                                                                                                                |
+| `BACKUP_TARGETS`          | A space-separated list of backup sources. Format is `"user@host:/path/to/source"` or `"user@host:PORT:/path/to/source"` for non-standard SSH ports.                                                                                                                                                  |
 | `SSH_KEY_PATH`            | (Optional) Absolute path to the **private** SSH key (e.g., `id_rsa`), not the public key (`id_rsa.pub`). Leave empty to use the default key of the user running the script. Use this if you must run the script as `root`.                                                               |
 | `REPORT_EMAIL`            | The destination email address for backup reports.                                                                                                                                                                                                                                                   |
 | `LOG_DIR`                 | The directory where log files will be stored.                                                                                                                                                                                                                                                             |
