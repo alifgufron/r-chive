@@ -4,16 +4,17 @@
 
 `r-chive.sh` is a simple, lightweight, and flexible shell script for automating backups from multiple remote servers to a central backup server using `rsync`. It is designed to be robust, easy to configure, and provides detailed feedback through logs and email reports.
 
-The script performs a "mirror" backup for each specified target. After a successful sync, it creates a granular, compressed archive for **each individual target**, allowing for highly efficient and specific restorations.
+The script performs a "mirror" backup for each specified target. After a successful sync, it can create granular, compressed archives and/or space-efficient, point-in-time snapshots for **each individual target**, allowing for highly efficient and specific restorations.
 
 ## 2. Features
 
+- **Filesystem Snapshots**: Creates space-efficient, point-in-time snapshots using hard links (similar to rsnapshot). This allows for a browsable backup history on the filesystem that consumes minimal extra space.
 - **Parallel Backups**: Executes backups for all targets concurrently, significantly reducing the total backup time.
 - **Optional SSH Port**: Specify a custom SSH port directly in the backup target string (e.g., `user@host:port:/path`).
 - **Granular Archiving**: Creates a separate, clean `.tar.zst` archive for each individual backup target, making restorations fast and specific.
-- **Flexible Retention Policy**: Supports two methods for cleaning up old archives:
-  - **By Time (Recommended)**: Keep archives for a specific number of days (e.g., delete all archives older than 30 days).
-  - **By Count**: Keep a specific number of the most recent archives.
+- **Flexible Retention Policy**: Supports two methods for cleaning up old archives and snapshots:
+  - **By Time (Recommended for Archives)**: Keep archives for a specific number of days.
+  - **By Count (For Archives and Snapshots)**: Keep a specific number of the most recent backups.
 - **Structured Archive Storage**: Organizes archives into a `HOST/YEAR/MONTH` directory structure.
 - **External Configuration**: All settings are managed in a separate `backup.conf` file.
 - **Multi-Target Backups**: Back up multiple directories from multiple remote servers in a single run.
@@ -27,9 +28,10 @@ The script performs a "mirror" backup for each specified target. After a success
 #### On the Backup Server
 
 1.  **`rsync`**: The `rsync` utility must be installed.
-2.  **`zstd`**: The Zstandard compression utility is required. On FreeBSD, install with `sudo pkg install zstd`.
-3.  **`sendmail`**: A configured Mail Transfer Agent (MTA) like `sendmail` is required for sending email reports.
-4.  **SSH Client**: Required to connect to remote servers.
+2.  **`cp -al` support**: Your filesystem must support hard links for the snapshot feature to work. Most standard filesystems (UFS, ZFS, EXT4, etc.) support this.
+3.  **`zstd`**: The Zstandard compression utility is required for the archiving feature. On FreeBSD, install with `sudo pkg install zstd`.
+4.  **`sendmail`**: A configured Mail Transfer Agent (MTA) like `sendmail` is required for sending email reports.
+5.  **SSH Client**: Required to connect to remote servers.
 
 #### On ALL Remote Servers
 
@@ -39,17 +41,19 @@ The script performs a "mirror" backup for each specified target. After a success
 
 All configuration is done by editing the `backup.conf` file, which must be in the same directory as `r-chive.sh`.
 
-| Variable                  | Description                                                                                                                                                                                                                                                                                            |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BACKUP_DEST`             | **Live Backup Destination.** This is the live mirror directory of your data. `rsync` syncs files here. Its content is always changing to match the source. Useful for quick restores to the latest state.                                                                  |
-| `BACKUP_TARGETS`          | A space-separated list of backup sources. Format is `"user@host:/path/to/source"` or `"user@host:PORT:/path/to/source"` for non-standard SSH ports.                                                                                                                                                  |
-| `SSH_KEY_PATH`            | (Optional) Absolute path to the **private** SSH key (e.g., `id_rsa`), not the public key (`id_rsa.pub`). Leave empty to use the default key of the user running the script. Use this if you must run the script as `root`.                                                               |
-| `REPORT_EMAIL`            | The destination email address for backup reports.                                                                                                                                                                                                                                                   |
-| `LOG_DIR`                 | The directory where log files will be stored.                                                                                                                                                                                                                                                             |
-| `CREATE_ARCHIVE`          | Set to `"yes"` to enable per-target archive creation.                                                                                                                                                                                                                                     |
-| `ARCHIVE_DEST`            | **Historical Archive Destination.** The parent directory for storing all versioned archives.                                                                                                                                                                                                                              |
-| `ARCHIVE_RETENTION_DAYS`  | **(Recommended)** **Number of days to keep archives.** If set to a value greater than `0` (e.g., `30`), the script will delete any archive older than that many days. This policy **takes precedence** over `ARCHIVE_RETENTION_COUNT`.                                                                              |
-| `ARCHIVE_RETENTION_COUNT` | **(Fallback)** **Number of archives to keep per target.** This is only used if `ARCHIVE_RETENTION_DAYS` is set to `0`. It keeps the specified number of the most recent archives and deletes older ones. Set to `0` to disable all retention.                                                                                                   |
+| Variable                      | Description                                                                                                                                                                                                                                                                                            |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BACKUP_DEST`                 | **Live Backup Destination.** This is the live mirror directory of your data. `rsync` syncs files here. Its content is always changing to match the source. Useful for quick restores to the latest state.                                                                  |
+| `BACKUP_TARGETS`              | A space-separated list of backup sources. Format is `"user@host:/path/to/source"` or `"user@host:PORT:/path/to/source"` for non-standard SSH ports.                                                                                                                                                  |
+| `SSH_KEY_PATH`                | (Optional) Absolute path to the **private** SSH key (e.g., `id_rsa`), not the public key (`id_rsa.pub`). Leave empty to use the default key of the user running the script. Use this if you must run the script as `root`.                                                               |
+| `REPORT_EMAIL`                | The destination email address for backup reports.                                                                                                                                                                                                                                                   |
+| `LOG_DIR`                     | The directory where log files will be stored.                                                                                                                                                                                                                                                             |
+| `CREATE_ARCHIVE`              | Set to `"yes"` to enable per-target archive creation.                                                                                                                                                                                                                                     |
+| `ARCHIVE_DEST`                | **Historical Archive Destination.** The parent directory for storing all versioned archives.                                                                                                                                                                                                                              |
+| `ARCHIVE_RETENTION_DAYS`      | **(Recommended)** **Number of days to keep archives.** If set to a value greater than `0` (e.g., `30`), the script will delete any archive older than that many days. This policy **takes precedence** over `ARCHIVE_RETENTION_COUNT`.                                                                              |
+| `ARCHIVE_RETENTION_COUNT`     | **(Fallback)** **Number of archives to keep per target.** This is only used if `ARCHIVE_RETENTION_DAYS` is set to `0`. It keeps the specified number of the most recent archives and deletes older ones. Set to `0` to disable all retention.                                                                                                   |
+| `CREATE_SNAPSHOT`             | Set to `"yes"` to enable space-efficient, hard-link based snapshot creation for each target.                                                                                                                                                                                          |
+| `SNAPSHOT_RETENTION_COUNT`    | **Number of snapshots to keep per target.** Keeps the specified number of the most recent snapshots and deletes older ones. Set to `0` to disable snapshot retention.                                                                                                   |
 
 ## 5. Setup and Usage (Recommended)
 

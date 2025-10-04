@@ -69,3 +69,15 @@ ARCHIVE_RETENTION_COUNT=6
 # If set to a value greater than 0, the script will use this policy. Otherwise, it will fall back to ARCHIVE_RETENTION_COUNT.
 # Example: 30 (keeps archives for 30 days)
 ARCHIVE_RETENTION_DAYS=0
+
+# --- Snapshot Configuration (using Hard Links) ---
+
+# Set to "yes" to create space-efficient snapshots using hard links for each backup target.
+# This provides a browsable file-system history of your backups.
+# Snapshots are created in the same directory as the live backup (BACKUP_DEST).
+CREATE_SNAPSHOT="no"
+
+# Number of snapshots to keep per backup target. The oldest snapshots will be deleted.
+# Set to 0 to disable the retention policy and keep all snapshots indefinitely.
+# Example: 7 (keeps the last 7 snapshots for each target)
+SNAPSHOT_RETENTION_COUNT=7

@@ -176,6 +176,50 @@ for HOST in ${UNIQUE_HOSTS}; do
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_SUCCESS} Target: ${target}\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
 
+            # --- Snapshot Creation ---
+            if [ "${CREATE_SNAPSHOT}" = "yes" ] && [ "${SNAPSHOT_RETENTION_COUNT}" -gt 0 ]; then
+                if [ "${DRY_RUN_MODE}" = "yes" ]; then
+                    log_message "--- Snapshot creation SKIPPED for target ${target} (Dry Run Mode) ---"
+                    HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status: SKIPPED (Dry Run)\n"
+                else
+                    log_message "--- Starting Snapshot Creation for target ${target} ---"
+                    # 1. Delete the oldest snapshot if it exists
+                    OLDEST_INDEX=$((SNAPSHOT_RETENTION_COUNT - 1))
+                    OLDEST_SNAPSHOT="${TARGET_DEST}.${OLDEST_INDEX}"
+                    if [ -d "${OLDEST_SNAPSHOT}" ]; then
+                        log_message "Snapshot Retention: Deleting oldest snapshot: ${OLDEST_SNAPSHOT}"
+                        rm -rf "${OLDEST_SNAPSHOT}"
+                    fi
+
+                    # 2. Rotate the intermediate snapshots
+                    i=$((SNAPSHOT_RETENTION_COUNT - 2))
+                    while [ "$i" -ge 0 ]; do
+                        SRC_SNAPSHOT="${TARGET_DEST}.${i}"
+                        DEST_SNAPSHOT="${TARGET_DEST}.$((i + 1))"
+                        if [ -d "${SRC_SNAPSHOT}" ]; then
+                            log_message "Snapshot Retention: Rotating snapshot ${SRC_SNAPSHOT} to ${DEST_SNAPSHOT}"
+                            mv "${SRC_SNAPSHOT}" "${DEST_SNAPSHOT}"
+                        fi
+                        i=$((i - 1))
+                    done
+
+                    # 3. Create the new snapshot from the live rsync directory
+                    NEW_SNAPSHOT="${TARGET_DEST}.0"
+                    log_message "Creating new snapshot: ${NEW_SNAPSHOT}"
+                    cp -al "${TARGET_DEST}" "${NEW_SNAPSHOT}"
+                    if [ $? -eq 0 ]; then
+                        log_message "Snapshot for target ${target} created successfully."
+                        HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status: SUCCESS\n"
+                    else
+                        log_message "ERROR: Failed to create snapshot for target ${target}."
+                        HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status: FAILED\n"
+                        HOST_OVERALL_STATUS="ERROR"
+                        GLOBAL_PROCESS_STATUS="ERROR"
+                    fi
+                fi
+            fi
+
+
             if [ "${CREATE_ARCHIVE}" = "yes" ]; then
                 if [ "${DRY_RUN_MODE}" = "yes" ]; then
                     log_message "--- Archive creation SKIPPED for target ${target} (Dry Run Mode) ---"
