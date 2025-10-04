@@ -1,29 +1,65 @@
 #!/bin/sh
 
 # ==============================================================================
-# CONFIGURATION
+# CONFIGURATION & ARGUMENT PARSING
 # ==============================================================================
 
-SCRIPT_DIR=$(dirname "$(readlink -f \"$0\")")
-CONFIG_FILE="${SCRIPT_DIR}/backup.conf"
+# --- Initialize variables ---
+CONFIG_FILE=""
+DRY_RUN_MODE="no"
+RSYNC_EXTRA_OPTS=""
 
-if [ -f "${CONFIG_FILE}" ]; then
-    . "${CONFIG_FILE}"
-else
-    echo "ERROR: Configuration file not found!"
+# --- Loop through all arguments to find config file and options ---
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)
+            DRY_RUN_MODE="yes"
+            RSYNC_EXTRA_OPTS="-n"
+            ;;
+        *)
+            # This is not an option, so it could be a file path
+            if [ -f "$arg" ]; then
+                # Check if we've already found a config file
+                if [ -n "$CONFIG_FILE" ]; then
+                    echo "ERROR: More than one configuration file specified. Please provide only one." >&2
+                    echo "Found: '$CONFIG_FILE' and '$arg'" >&2
+                    exit 1
+                fi
+                CONFIG_FILE="$arg"
+            fi
+            ;;
+    esac
+done
+
+# --- Configuration File Validation ---
+if [ -z "$CONFIG_FILE" ]; then
+    NON_OPTION_ARG=""
+    for arg in "$@"; do
+        if [ "$arg" != "--dry-run" ]; then
+            NON_OPTION_ARG="$arg"
+            break
+        fi
+    done
+
+    if [ -n "$NON_OPTION_ARG" ]; then
+         echo "ERROR: Configuration file not found at '$NON_OPTION_ARG'" >&2
+    else
+         echo "ERROR: No configuration file specified." >&2
+    fi
+    echo "Usage: $0 <path_to_config_file> [--dry-run]" >&2
     exit 1
 fi
 
-LOG_FILE="${LOG_DIR}/backup-$(date +'%Y-%m-%d').log"
+# --- Source Configuration ---
+echo "INFO: Using configuration file: ${CONFIG_FILE}"
+. "${CONFIG_FILE}"
 
-# --- Argument Parsing ---
-DRY_RUN_MODE="no"
-RSYNC_EXTRA_OPTS=""
-if [ "$1" = "--dry-run" ]; then
-    DRY_RUN_MODE="yes"
-    RSYNC_EXTRA_OPTS="-n"
+# Announce dry run mode if enabled
+if [ "$DRY_RUN_MODE" = "yes" ]; then
     echo "--- DRY RUN MODE ENABLED ---"
 fi
+
+LOG_FILE="${LOG_DIR}/backup-$(date +'%Y-%m-%d').log"
 
 # --- Lock File Management ---
 LOCK_FILE="/tmp/backup_rsync.lock"
@@ -118,7 +154,7 @@ for HOST in ${UNIQUE_HOSTS}; do
             REMOTE_BASENAME=$(basename "${REMOTE_SOURCE_CLEAN}")
             REMOTE_DIRNAME=$(dirname "${REMOTE_SOURCE_CLEAN}")
 
-            RSYNC_DEST="${BACKUP_DEST}/${HOST}${REMOTE_DIRNAME}"
+            RSYNC_DEST="${BACKUP_DEST}/${HOST}/Live${REMOTE_DIRNAME}"
             RSYNC_SOURCE="${USER_HOST}:${REMOTE_SOURCE_CLEAN}"
             TARGET_DEST=$(echo "${RSYNC_DEST}/${REMOTE_BASENAME}" | sed 's://*:/:g')
 
@@ -153,7 +189,6 @@ for HOST in ${UNIQUE_HOSTS}; do
     for pid in ${PID_LIST}; do
         wait "${pid}"
     done
-    HOST_END_TIME=$(date +%s)
     log_message "All backup jobs for host ${HOST} have finished."
 
     log_message "Processing results for host: ${HOST}"
@@ -175,50 +210,6 @@ for HOST in ${UNIQUE_HOSTS}; do
             log_message "Backup for target ${target} SUCCESS."
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_SUCCESS} Target: ${target}\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
-
-            # --- Snapshot Creation ---
-            if [ "${CREATE_SNAPSHOT}" = "yes" ] && [ "${SNAPSHOT_RETENTION_COUNT}" -gt 0 ]; then
-                if [ "${DRY_RUN_MODE}" = "yes" ]; then
-                    log_message "--- Snapshot creation SKIPPED for target ${target} (Dry Run Mode) ---"
-                    HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status: SKIPPED (Dry Run)\n"
-                else
-                    log_message "--- Starting Snapshot Creation for target ${target} ---"
-                    # 1. Delete the oldest snapshot if it exists
-                    OLDEST_INDEX=$((SNAPSHOT_RETENTION_COUNT - 1))
-                    OLDEST_SNAPSHOT="${TARGET_DEST}.${OLDEST_INDEX}"
-                    if [ -d "${OLDEST_SNAPSHOT}" ]; then
-                        log_message "Snapshot Retention: Deleting oldest snapshot: ${OLDEST_SNAPSHOT}"
-                        rm -rf "${OLDEST_SNAPSHOT}"
-                    fi
-
-                    # 2. Rotate the intermediate snapshots
-                    i=$((SNAPSHOT_RETENTION_COUNT - 2))
-                    while [ "$i" -ge 0 ]; do
-                        SRC_SNAPSHOT="${TARGET_DEST}.${i}"
-                        DEST_SNAPSHOT="${TARGET_DEST}.$((i + 1))"
-                        if [ -d "${SRC_SNAPSHOT}" ]; then
-                            log_message "Snapshot Retention: Rotating snapshot ${SRC_SNAPSHOT} to ${DEST_SNAPSHOT}"
-                            mv "${SRC_SNAPSHOT}" "${DEST_SNAPSHOT}"
-                        fi
-                        i=$((i - 1))
-                    done
-
-                    # 3. Create the new snapshot from the live rsync directory
-                    NEW_SNAPSHOT="${TARGET_DEST}.0"
-                    log_message "Creating new snapshot: ${NEW_SNAPSHOT}"
-                    cp -al "${TARGET_DEST}" "${NEW_SNAPSHOT}"
-                    if [ $? -eq 0 ]; then
-                        log_message "Snapshot for target ${target} created successfully."
-                        HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status: SUCCESS\n"
-                    else
-                        log_message "ERROR: Failed to create snapshot for target ${target}."
-                        HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status: FAILED\n"
-                        HOST_OVERALL_STATUS="ERROR"
-                        GLOBAL_PROCESS_STATUS="ERROR"
-                    fi
-                fi
-            fi
-
 
             if [ "${CREATE_ARCHIVE}" = "yes" ]; then
                 if [ "${DRY_RUN_MODE}" = "yes" ]; then
@@ -271,6 +262,62 @@ for HOST in ${UNIQUE_HOSTS}; do
         HOST_PROCESSED_TARGETS_LIST="${HOST_PROCESSED_TARGETS_LIST}  ${ICON_TARGET} ${target}\n"
     done
 
+    # --- HOST-LEVEL Snapshot Creation ---
+    if [ "${CREATE_SNAPSHOT}" = "yes" ] && [ "${SNAPSHOT_RETENTION_COUNT}" -gt 0 ]; then
+        if [ "${DRY_RUN_MODE}" = "yes" ]; then
+            log_message "--- Host-level snapshot creation SKIPPED for host ${HOST} (Dry Run Mode) ---"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status (Host ${HOST}): SKIPPED (Dry Run)\n"
+        else
+            log_message "--- Starting Host-level Snapshot Creation for host ${HOST} ---"
+            HOST_BACKUP_DIR="${BACKUP_DEST}/${HOST}/Live"
+            HOST_SNAPSHOT_BASE_DIR="${BACKUP_DEST}/${HOST}"
+
+            if [ ! -d "${HOST_BACKUP_DIR}" ]; then
+                log_message "WARNING: Host backup directory ${HOST_BACKUP_DIR} does not exist. Skipping snapshot."
+                HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
+                HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status (Host ${HOST}): SKIPPED (No Source)\n"
+            else
+                # 1. Delete the oldest snapshot if it exists
+                OLDEST_INDEX=$((SNAPSHOT_RETENTION_COUNT - 1))
+                OLDEST_SNAPSHOT="${HOST_SNAPSHOT_BASE_DIR}/Snapshot.${OLDEST_INDEX}"
+                if [ -d "${OLDEST_SNAPSHOT}" ]; then
+                    log_message "Snapshot Retention: Deleting oldest snapshot: ${OLDEST_SNAPSHOT}"
+                    rm -rf "${OLDEST_SNAPSHOT}"
+                fi
+
+                # 2. Rotate the intermediate snapshots
+                i=$((SNAPSHOT_RETENTION_COUNT - 2))
+                while [ "$i" -ge 0 ]; do
+                    SRC_SNAPSHOT="${HOST_SNAPSHOT_BASE_DIR}/Snapshot.${i}"
+                    DEST_SNAPSHOT="${HOST_SNAPSHOT_BASE_DIR}/Snapshot.$((i + 1))"
+                    if [ -d "${SRC_SNAPSHOT}" ]; then
+                        log_message "Snapshot Retention: Rotating snapshot ${SRC_SNAPSHOT} to ${DEST_SNAPSHOT}"
+                        mv "${SRC_SNAPSHOT}" "${DEST_SNAPSHOT}"
+                    fi
+                    i=$((i - 1))
+                done
+
+                # 3. Create the new snapshot from the live rsync directory
+                NEW_SNAPSHOT="${HOST_SNAPSHOT_BASE_DIR}/Snapshot.0"
+                log_message "Creating new snapshot: ${NEW_SNAPSHOT} from ${HOST_BACKUP_DIR}"
+                cp -al "${HOST_BACKUP_DIR}" "${NEW_SNAPSHOT}"
+                if [ $? -eq 0 ]; then
+                    log_message "Snapshot for host ${HOST} created successfully."
+                    HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
+                    HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status (Host ${HOST}): SUCCESS\n"
+                else
+                    log_message "ERROR: Failed to create snapshot for host ${HOST}."
+                    HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
+                    HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status (Host ${HOST}): FAILED\n"
+                    HOST_OVERALL_STATUS="ERROR"
+                    GLOBAL_PROCESS_STATUS="ERROR"
+                fi
+            fi
+        fi
+    fi
+
+    HOST_END_TIME=$(date +%s)
     HOST_DURATION=$((HOST_END_TIME - HOST_START_TIME))
     H_DAYS=$((HOST_DURATION / 86400)); H_HOURS=$(( (HOST_DURATION % 86400) / 3600 )); H_MINUTES=$(( (HOST_DURATION % 3600) / 60 )); H_SECONDS=$((HOST_DURATION % 60))
     HOST_FORMATTED_DURATION=$(printf "%d days, %02d hours, %02d minutes, %02d seconds" ${H_DAYS} ${H_HOURS} ${H_MINUTES} ${H_SECONDS})
