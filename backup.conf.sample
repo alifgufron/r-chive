@@ -1,83 +1,119 @@
-#!/bin/sh
-
-# ==============================================================================
-# backup.conf.sample
 #
+# r-chive.sh - Sample Configuration File
+#
+
 # INSTRUCTIONS:
-# 1. Copy this file to 'backup.conf'
-#    cp backup.conf.sample backup.conf
-# 2. Edit 'backup.conf' with your actual settings.
-#
+# 1. Copy this file to a permanent location (e.g., /usr/local/etc/r-chive.conf).
+# 2. Edit the new file with your actual server settings.
+
+# ==============================================================================
+# CORE JOB CONFIGURATION
 # ==============================================================================
 
-# The main destination directory where all live rsync mirrors will be stored.
-# This directory holds the most recent version of your files for quick access.
-# Example: "/mnt/backups/live"
-BACKUP_DEST="/path/to/your/backup_destination"
+# 1. Define all backup job names here, separated by spaces.
+#    To activate a job, add its name to this list.
+#    To deactivate a job, simply remove its name.
+#
+#    Note: Job names must only contain letters, numbers, and underscores.
+#    Good convention: [server_name]_[service_or_data_description]
 
-# A list of remote directories to back up.
-# You can list multiple targets, one per line. Lines starting with '#' are ignored.
-# This makes it easier to manage a large number of targets.
-#
-# Example:
-# BACKUP_TARGETS="
-#   # Server 1 - Web and Data
-#   admin@server1.example.com:/var/www/
-#   admin@server1.example.com:/home/user/documents/
-#
-#   # Server 2 - Databases
-#   backup@db.example.com:/var/db_backups/
-# "
-BACKUP_TARGETS="user@your_server:/path/to/backup"
+BACKUP_JOBS="web_server_www db_server_dumps"
+
+# 2. Define the detailed settings for each job listed in BACKUP_JOBS.
+#    The prefix of the variable name (e.g., "web_server_www") MUST EXACTLY
+#    MATCH a job name defined above.
+
+# --- Job 1: Backup the public web files from a web server ---
+web_server_www_SRC="backup_user@web-server-01.example.com:/var/www/html"
+web_server_www_EXCLUDES="
+  # One exclusion pattern per line. Lines starting with # are ignored.
+  # These patterns are passed directly to rsync's --exclude option.
+  wp-content/cache/
+  temp/
+  *.log
+  *.tmp
+"
+
+# --- Job 2: Backup daily database dumps from a database server ---
+# This example uses a custom SSH port (2222).
+db_server_dumps_SRC="backup_user@db-server-01.example.com:2222:/var/local/mysql_dumps"
+db_server_dumps_EXCLUDES=""
+
+
+# --- Example of a disabled job ---
+# The definitions below are ignored because "fileserver_docs" is not in BACKUP_JOBS.
+fileserver_docs_SRC="backup_user@fileserver.example.com:/srv/company_documents"
+fileserver_docs_EXCLUDES="
+  /private_notes/
+"
+
+# ==============================================================================
+# DESTINATION & SSH
+# ==============================================================================
+
+# The top-level directory on this server where all backups will be stored.
+# The script will create host-named subdirectories inside this location.
+# Example: "/mnt/backups"
+BACKUP_DEST="/var/backups/r-chive"
 
 # [OPTIONAL] Absolute path to the private SSH key for passwordless connection.
 # Leave this empty to use the default key of the user running the script (e.g., ~/.ssh/id_rsa).
-# Use this if you need to specify a different key, for instance, if running as root.
-# Example: "/home/backup_user/.ssh/id_rsa_server1"
+# Example: "/home/backup_user/.ssh/id_rsa_backups"
 SSH_KEY_PATH=""
 
+# ==============================================================================
+# REPORTING & LOGGING
+# ==============================================================================
+
 # Email address to receive the backup status report.
-# Example: "your_email@example.com"
-REPORT_EMAIL="your_email@example.com"
+REPORT_EMAIL="admin@example.com"
 
-# Directory where log files will be stored.
+# Set to "yes" to include a detailed log file as an attachment in the email.
+# Set to "no" for a short, summary-only email.
+REPORT_EMAIL_VERBOSE="no"
+
+# Directory where all log files will be stored.
 # Example: "/var/log/r-chive"
-LOG_DIR="/var/log/rsync_backup"
+LOG_DIR="/var/log/r-chive"
 
-# Set to "yes" for verbose rsync logging (includes file lists).
-# The default is "no" for a quieter log.
+# Set to "yes" to create a separate, detailed log file for each remote host.
+# This is highly recommended for easier debugging.
+LOG_PER_HOST="yes"
+
+# Set to "yes" to enable Monitor Mode. This adds `--progress` to rsync,
+# showing real-time file transfer progress in the per-host log.
+# Useful for monitoring large backups with `tail -f`.
 LOG_VERBOSE="no"
 
-# --- Granular Archive Configuration ---
+# ==============================================================================
+# ARCHIVE & RETENTION
+# ==============================================================================
 
-# Set to "yes" to create a compressed .tar.zst archive for each backup target after a successful sync.
-# This is highly recommended for historical versioning.
+# Set to "yes" to create a compressed .tar.zst archive for each backup job.
 CREATE_ARCHIVE="yes"
 
 # The parent directory where all historical, versioned archives will be stored.
-# Archives will be organized by host, year, and month (e.g., /mnt/backups/archives/server1.example.com/2023/12/).
-# Example: "/mnt/backups/archives"
-ARCHIVE_DEST="/path/to/your/archive_destination"
+# Example: "/mnt/archives/r-chive"
+ARCHIVE_DEST="/var/archives/r-chive"
 
-# Number of archives to keep per backup target. The oldest archives will be deleted.
-# Set to 0 to disable the retention policy and keep all archives indefinitely.
-# Example: 30  (keeps the last 30 archives for each target)
-ARCHIVE_RETENTION_COUNT=6
-
-# [RECOMMENDED] Number of days to keep archives. Archives older than this will be deleted.
-# This setting takes precedence over ARCHIVE_RETENTION_COUNT.
-# If set to a value greater than 0, the script will use this policy. Otherwise, it will fall back to ARCHIVE_RETENTION_COUNT.
+# [RECOMMENDED] Deletes archives older than this many days.
+# This setting takes precedence over ARCHIVE_RETENTION_COUNT. Set to 0 to disable.
 # Example: 30 (keeps archives for 30 days)
-ARCHIVE_RETENTION_DAYS=0
+ARCHIVE_RETENTION_DAYS=30
 
-# --- Snapshot Configuration (using Hard Links) ---
+# [FALLBACK] If ARCHIVE_RETENTION_DAYS is 0, this keeps the specified number
+# of the most recent archives per job. Set to 0 to keep all archives.
+ARCHIVE_RETENTION_COUNT=5
 
-# Set to "yes" to create space-efficient snapshots using hard links for each backup target.
+# ==============================================================================
+# SNAPSHOT & RETENTION (HOST-LEVEL)
+# ==============================================================================
+
+# Set to "yes" to create space-efficient, point-in-time snapshots using hard links.
 # This provides a browsable file-system history of your backups.
-# Snapshots are created in the same directory as the live backup (BACKUP_DEST).
-CREATE_SNAPSHOT="no"
+CREATE_SNAPSHOT="yes"
 
-# Number of snapshots to keep per backup target. The oldest snapshots will be deleted.
+# Number of snapshots to keep per host. The oldest snapshots will be deleted.
 # Set to 0 to disable the retention policy and keep all snapshots indefinitely.
-# Example: 7 (keeps the last 7 snapshots for each target)
+# Example: 7 (keeps the last 7 daily snapshots)
 SNAPSHOT_RETENTION_COUNT=7

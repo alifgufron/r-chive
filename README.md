@@ -2,112 +2,147 @@
 
 ## 1. Overview
 
-`r-chive.sh` is a simple, lightweight, and flexible shell script for automating backups from multiple remote servers to a central backup server using `rsync`. It is designed to be robust, easy to configure, and provides detailed feedback through logs and email reports.
+`r-chive.sh` is a flexible shell script for automating backups from multiple remote servers using `rsync`. It is designed to be robust, easy to configure, and provides detailed feedback through logs and email reports.
 
-The script performs a "mirror" backup for each specified host into a `Live` directory. After a successful sync, it can create granular, compressed archives for each backup task and/or space-efficient, point-in-time snapshots at the **host level**. This results in a clean, browsable backup history with a clear separation between the live backup and its historical snapshots (e.g., `.../HOST/Live`, `.../HOST/Snapshot.0`, etc.).
+The script's core philosophy is a job-based system. You define a list of backup "jobs," and for each job, you specify a source and a list of exclusion patterns. This provides highly granular control over your backups.
+
+It performs a "mirror" backup for each specified host. Thanks to `rsync`'s `--relative` (`-R`) option, the full source path is recreated within a `Live` directory at the destination. After a successful sync, it can create compressed archives for each backup job and/or space-efficient, point-in-time snapshots at the **host level**.
 
 ## 2. Features
 
-- **Host-Level Snapshots**: Creates space-efficient, point-in-time snapshots of the entire host's backup directory using hard links. This provides a browsable backup history that consumes minimal extra space.
-- **Clean Directory Structure**: Organizes backups for each host into a `Live` directory (the most recent state) and historical `Snapshot.X` directories.
-- **Explicit Configuration**: Requires a configuration file to be passed as a command-line argument, preventing ambiguity and allowing multiple, independent backup jobs to be configured.
-- **Parallel Backups**: Executes backups for all targets on a host concurrently, significantly reducing the total backup time.
-- **Optional SSH Port**: Specify a custom SSH port directly in the backup target string (e.g., `user@host:port:/path`).
-- **Granular Archiving**: Creates a separate, clean `.tar.zst` archive for each individual backup target, making restorations fast and specific.
-- **Flexible Retention Policy**: Supports two methods for cleaning up old archives and snapshots:
-  - **By Time (Recommended for Archives)**: Keep archives for a specific number of days.
-  - **By Count (For Archives and Snapshots)**: Keep a specific number of the most recent backups.
-- **Structured Archive Storage**: Organizes archives into a `HOST/YEAR/MONTH` directory structure.
-- **Multi-Target Backups**: Back up multiple directories from multiple remote servers in a single run.
+- **Job-Based Configuration**: A clean, powerful system where you define backup jobs and control them from a master list.
+- **Strict Job Name Validation**: Job names are validated to ensure they only contain letters, numbers, and underscores, preventing common configuration errors.
+- **Path-Preserving Backups**: Uses `rsync`'s relative path feature to automatically replicate the source directory structure at the destination.
+- **Per-Job Exclusions**: Easily specify a list of files and directories to exclude for each backup job individually via the config file.
+- **Global Excludes**: A command-line `--exclude` parameter allows you to add temporary, global exclusion patterns for a single run.
+- **Efficient SSH Port Pre-check**: Automatically checks if the remote SSH port is open **once per host**, providing faster feedback on connectivity issues.
+- **Host-Level Snapshots**: Creates space-efficient, point-in-time snapshots of an entire host's backup directory using hard links.
+- **Granular Archiving**: Creates a separate, clean `.tar.zst` archive for each individual backup job.
+- **Advanced Logging**: 
+    - A clean, high-level global log file (`r-chive.log`).
+    - Optional, detailed per-host logs organized into subdirectories (`HOST/DATE.log`).
+    - **Monitor Mode** (`LOG_VERBOSE=yes`): View real-time transfer progress in the per-host log, perfect for `tail -f`.
+- **Flexible Email Reports**: Choose between a concise summary report or a summary with a detailed log file as an attachment. The attached log is always clean, even in monitor mode.
+- **Improved Error Reporting**: Failed jobs now include a short, actionable error message directly in the global log and email body for quicker diagnosis.
+- **Parallel Backups**: Executes backups for all jobs on a single host concurrently, significantly reducing total backup time.
+- **Custom SSH Port Support**: Specify a custom SSH port directly in the job's source string.
+- **Flexible Retention Policies**: Clean up old archives and snapshots based on time (days) or count.
 - **Singleton Execution**: A robust lock file mechanism prevents the script from running multiple times simultaneously.
 - **Dry Run Mode**: A `--dry-run` mode allows you to test your configuration safely.
-- **Rsync Efficiency**: Uses `rsync` for fast, incremental backups.
-- **Detailed Logging & Email Reports**: Provides comprehensive feedback on every step of the process, with accurate duration metrics.
 
 ## 3. Prerequisites
 
-#### On the Backup Server
-
-1.  **`rsync`**: The `rsync` utility must be installed.
-2.  **`cp -al` support**: Your filesystem must support hard links for the snapshot feature to work. Most standard filesystems (UFS, ZFS, EXT4, etc.) support this.
-3.  **`zstd`**: The Zstandard compression utility is required for the archiving feature. On FreeBSD, install with `sudo pkg install zstd`.
-4.  **`sendmail`**: A configured Mail Transfer Agent (MTA) like `sendmail` is required for sending email reports.
-5.  **SSH Client**: Required to connect to remote servers.
-
-#### On ALL Remote Servers
-
-1.  **`rsync`**: Must also be installed on every remote server you intend to back up. `rsync` works by communicating between the client and server programs.
+- **On the Backup Server**: `rsync`, `zstd`, `nc` (netcat), a configured MTA (like `sendmail`), and an SSH client.
+- **On ALL Remote Servers**: `rsync` must be installed.
 
 ## 4. Configuration
 
-All configuration is done in a `.conf` file (e.g., `backup.conf`). This file **must** be passed as an argument to the script.
+Configuration is managed via a `.conf` file passed as an argument to the script.
+
+### Command-Line Arguments
+
+The script accepts the following command-line arguments:
+
+| Argument            | Description                                                                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `config_file`       | **(Required)** The path to your configuration file.                                                                                    |
+| `--dry-run`         | (Optional) Simulates the backup process without making any actual changes.                                                             |
+| `--exclude PATTERN` | (Optional) Adds a temporary exclusion pattern that applies to all jobs for this run. Can be used multiple times. e.g. `--exclude "*.log"`. |
+
+### How It Works
+
+1.  You define a master list of job names in the `BACKUP_JOBS` array.
+2.  For each job name, you define its properties using variables prefixed with that name (e.g., `myjob_SRC`, `myjob_EXCLUDES`).
+3.  The script only executes jobs whose names are present in the `BACKUP_JOBS` list.
+
+### Configuration Variables
 
 | Variable                      | Description                                                                                                                                                                                                                                                                                            |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BACKUP_DEST`                 | **Parent Backup Destination.** This is the top-level directory where host-specific folders (e.g., `10.11.1.121/`) will be created. The script will automatically create `Live` and `Snapshot.X` subdirectories inside each host's folder.                                                                  |
-| `BACKUP_TARGETS`              | A space-separated list of backup sources. Format is `"user@host:/path/to/source"` or `"user@host:PORT:/path/to/source"` for non-standard SSH ports.                                                                                                                                                  |
-| `SSH_KEY_PATH`                | (Optional) Absolute path to the **private** SSH key (e.g., `id_rsa`). Leave empty to use the default key of the user running the script.                                                                                                                                                              |
+| `BACKUP_JOBS`                 | **(Required)** A space-separated list of all backup job names you want to **activate**. **Note:** Job names must only contain letters, numbers, and underscores (e.g., `server1_db`, not `server-1-db`).                                                                                                  |
+| `[job_name]_SRC`              | **(Required)** The source for a specific backup job. The `[job_name]` prefix must match a name in `BACKUP_JOBS`. Format is `"user@host:/path/to/source"` or `"user@host:PORT:/path/to/source"` for non-standard SSH ports. The full path (`/path/to/source`) will be recreated at the destination. |
+| `[job_name]_EXCLUDES`         | (Optional) A multi-line string containing file or directory patterns to exclude for this specific job. One pattern per line. These are passed to `rsync`'s `--exclude` option.                                                                                                                            |
+| `BACKUP_DEST`                 | **(Required)** The top-level directory on the backup server where host-specific folders (e.g., `10.11.1.121/`) will be created.                                                                                                                                                                            |
+| `SSH_KEY_PATH`                | (Optional) Absolute path to the **private** SSH key. Leave empty to use the default key.                                                                                                                                                                                                               |
 | `REPORT_EMAIL`                | The destination email address for backup reports.                                                                                                                                                                                                                                                   |
+| `REPORT_EMAIL_VERBOSE`        | Set to `"no"` for a short summary email. Set to `"yes"` to include a detailed log file as an attachment in the email.                                                                                                                                                                                   |
 | `LOG_DIR`                     | The directory where log files will be stored.                                                                                                                                                                                                                                                             |
-| `CREATE_ARCHIVE`              | Set to `"yes"` to enable per-target archive creation.                                                                                                                                                                                                                                     |
-| `ARCHIVE_DEST`                | **Historical Archive Destination.** The parent directory for storing all versioned archives.                                                                                                                                                                                                                              |
-| `ARCHIVE_RETENTION_DAYS`      | **(Recommended)** **Number of days to keep archives.** If set to a value greater than `0` (e.g., `30`), the script will delete any archive older than that many days. This policy **takes precedence** over `ARCHIVE_RETENTION_COUNT`.                                                                              |
-| `ARCHIVE_RETENTION_COUNT`     | **(Fallback)** **Number of archives to keep per target.** This is only used if `ARCHIVE_RETENTION_DAYS` is set to `0`. It keeps the specified number of the most recent archives and deletes older ones.                                                                                                   |
-| `CREATE_SNAPSHOT`             | Set to `"yes"` to enable space-efficient, hard-link based snapshot creation **per host**.                                                                                                                                                                                          |
-| `SNAPSHOT_RETENTION_COUNT`    | **Number of snapshots to keep per host.** Keeps the specified number of the most recent snapshots and deletes older ones.                                                                                                   |
+| `LOG_PER_HOST`                | Set to `"yes"` to create detailed, date-stamped log files inside a per-host subdirectory (e.g., `LOG_DIR/HOST/DATE.log`). Highly recommended.                                                                                                                                                              |
+| `LOG_VERBOSE`                 | Set to `"yes"` to enable **Monitor Mode**. This adds `--progress` to `rsync`, showing real-time file transfer progress in the per-host log. Useful for monitoring large backups with `tail -f`. This does not affect the content of the email report.                                                  |
+| `CREATE_ARCHIVE`              | Set to `"yes"` to enable per-job archive creation.                                                                                                                                                                                                                                                |
+| `ARCHIVE_DEST`                | The parent directory for storing all versioned archives.                                                                                                                                                                                                                                                  |
+| `ARCHIVE_RETENTION_DAYS`      | **(Recommended)** Deletes archives older than this many days. Takes precedence over `ARCHIVE_RETENTION_COUNT`.                                                                                                                                                                                           |
+| `ARCHIVE_RETENTION_COUNT`     | **(Fallback)** Keeps the specified number of the most recent archives per job. Used only if `ARCHIVE_RETENTION_DAYS` is `0`.                                                                                                                                                                               |
+| `CREATE_SNAPSHOT`             | Set to `"yes"` to enable space-efficient, hard-link based snapshots **per host**.                                                                                                                                                                                                                |
+| `SNAPSHOT_RETENTION_COUNT`    | Number of snapshots to keep per host.                                                                                                                                                                                                                                                              |
 
 ## 5. Setup and Usage
 
-### Step 1-3: Initial Setup
-1.  **Place Script**: Copy `r-chive.sh` to a suitable location (e.g., `/usr/local/bin/`).
-2.  **Create Config File**: Create your configuration file by copying the sample. You can place this anywhere (e.g., `/usr/local/etc/r-chive/main.conf`).
+### Step 1: Create Config File
+
+Copy `backup.conf.sample` to a permanent location (e.g., `/usr/local/etc/r-chive/main.conf`) and edit it. Define your jobs in `BACKUP_JOBS` and create the corresponding `_SRC` and `_EXCLUDES` variables.
+
+**Example `main.conf`:**
+```bash
+# Activate two jobs for two different servers
+BACKUP_JOBS="web_server_www app_server_logs"
+
+# Define job 1: Backup website files from web_server_01
+web_server_www_SRC="backup_user@web-server-01.example.com:/var/www/html"
+web_server_www_EXCLUDES="
+  wp-content/cache/
+  *.log
+  tmp/
+"
+
+# Define job 2: Backup application logs from app_server_01 on a custom SSH port
+app_server_logs_SRC="backup_user@app-server-01.example.com:2222:/var/log/my_app"
+app_server_logs_EXCLUDES=""
+
+# Define other global settings...
+BACKUP_DEST="/mnt/backups"
+REPORT_EMAIL="admin@example.com"
+LOG_DIR="/var/log/r-chive"
+```
+
+### Step 2: Setup SSH Keys
+
+Ensure the user running the script on the backup server has passwordless SSH access to the remote servers. Use `ssh-copy-id` for this.
+
+### Step 3: Install Prerequisites
+
+Ensure `nc` (netcat) is installed on the backup server: `sudo pkg install netcat` (FreeBSD) or `sudo apt install netcat-traditional` (Debian/Ubuntu).
+
+### Step 4: Run a Test
+
+Always perform a dry run first to verify your configuration and connections. You can also add temporary excludes.
+
+```bash
+# As the user who owns the SSH keys:
+/path/to/r-chive.sh /usr/local/etc/r-chive/main.conf --dry-run --exclude "*.tmp"
+```
+
+Once satisfied, run it for real:
+```bash
+/path/to/r-chive.sh /usr/local/etc/r-chive/main.conf
+```
+
+### Step 5: Schedule with Cron
+
+Edit the crontab for the user that runs the backups (`crontab -e`).
+
+```cron
+# Run backup every day at 2:30 AM
+30 2 * * * /path/to/r-chive.sh /usr/local/etc/r-chive/main.conf >/dev/null 2>&1
+```
+
+## 6. Log Management
+
+The new logging system is designed to work with standard system tools.
+
+-   **Global Log**: The script appends to `/var/log/r-chive/r-chive.log`. You should configure your system's log rotation tool (e.g., `newsyslog.conf` on FreeBSD, `logrotate` on Linux) to manage this file.
+-   **Per-Host Logs**: If `LOG_PER_HOST` is `yes`, detailed logs are created daily (e.g., `/var/log/r-chive/server1/2025-10-05.log`). You can use a `find` command in a weekly cron job to clean up old logs, for example:
     ```bash
-    mkdir -p /usr/local/etc/r-chive
-    cp backup.conf.sample /usr/local/etc/r-chive/main.conf
+    # Deletes host-specific logs older than 30 days
+    find /var/log/r-chive -type f -name "*.log" -mtime +30 -delete
     ```
-3.  **Edit Config File**: Open your new config file and fill it with your server details, paths, and email address.
-4.  **Make it Executable**: `chmod +x /usr/local/bin/r-chive.sh`
-
-### Step 4: User and SSH Key Configuration (Crucial!)
-This workflow involves two user roles:
-- **Backup User**: An account on the **Backup Server** that will run the script (e.g., `userbackup`).
-- **Remote User**: An account on the **Remote Server** whose data will be accessed (e.g., `remoteadmin`).
-
-1.  **On the Backup Server**: Create the `userbackup` (`adduser userbackup`) and generate an SSH key for them (`sudo -u userbackup ssh-keygen ...` or `su -m userbackup -c "..."`). Leave the passphrase empty.
-2.  **On the Remote Server**: Ensure the `remoteadmin` user exists and has read permissions for the target directories.
-3.  **Connect Them**: From the Backup Server, copy the Backup User's public key to the Remote User on the remote server.
-    ```bash
-    sudo -u userbackup ssh-copy-id -i /home/userbackup/.ssh/id_rsa.pub remoteadmin@server-remote.com
-    ```
-
-### Step 5: Run a Manual Test
-
--   **Dry Run (Required First!)**: Test your configuration without making any changes.
-    ```bash
-    sudo -u userbackup /usr/local/bin/r-chive.sh /usr/local/etc/r-chive/main.conf --dry-run
-    ```
--   **Live Test**: Run the script for real.
-    ```bash
-    sudo -u userbackup /usr/local/bin/r-chive.sh /usr/local/etc/r-chive/main.conf
-    ```
-
-### Step 6: Schedule with Cron
-Schedule the script using the `cron` of the **Backup User** (`userbackup`), not `root`.
-
-1.  Open the crontab for the backup user: `sudo crontab -e -u userbackup`
-2.  Add a line to run the script on a schedule. For example, every day at 2:30 AM:
-    ```cron
-    30 2 * * * /usr/local/bin/r-chive.sh /usr/local/etc/r-chive/main.conf
-    ```
-
-## 6. Advanced Usage & FAQ
-
-- **Running as `root`**: Not recommended, but if you must, set the `SSH_KEY_PATH` in your `.conf` file to the path of another user's private key (e.g., `/home/userbackup/.ssh/id_rsa`).
-- **`ssh` as `root` vs `su`**: `ssh` run by `root` looks for keys in `/root/.ssh/`. `cron` scheduled for `userbackup` runs as `userbackup` and correctly finds keys in `/home/userbackup/.ssh/`.
-- **Meaning of `f++++++++++` output**: This is from `rsync --itemize-changes`. `f` means file, and `++++++++++` means it is a 100% **new** file.
-
-## 7. Troubleshooting
-
-- **`rsync: command not found` (on remote)**: Ensure `rsync` is installed on all remote servers.
-- **`Permission Denied (SSH)`**: Redo step 4c to ensure the SSH key was copied correctly.
-- **`ERROR: No configuration file specified`**: You must pass the path to your `.conf` file as the first argument to the script.
