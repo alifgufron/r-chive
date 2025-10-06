@@ -27,7 +27,7 @@ It performs a "mirror" backup for each specified host. Thanks to `rsync`'s `--re
 - **Parallel Backups**: Executes backups for all jobs on a single host concurrently, significantly reducing total backup time.
 - **Custom SSH Port Support**: Specify a custom SSH port directly in the job's source string.
 - **Flexible Retention Policies**: Clean up old archives and snapshots based on time (days) or count.
-- **Singleton Execution**: A robust lock file mechanism prevents the script from running multiple times simultaneously.
+- **Configuration-Specific Locking**: A robust lock file mechanism prevents multiple instances using the same configuration from running simultaneously, while allowing parallel execution of different backup configurations.
 - **Dry Run Mode**: A `--dry-run` mode allows you to test your configuration safely.
 
 ## 3. Prerequisites

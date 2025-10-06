@@ -89,7 +89,15 @@ fi
 LOG_FILE="${LOG_DIR}/r-chive.log"
 
 # --- Lock File Management ---
-LOCK_FILE="/tmp/backup_rsync.lock"
+LOCK_DIR="/var/run/r-chive"
+if [ ! -d "${LOCK_DIR}" ]; then
+    mkdir -p "${LOCK_DIR}" || { 
+        echo "ERROR: Failed to create lock directory ${LOCK_DIR}. Please check permissions."
+        exit 1
+    }
+fi
+CONFIG_BASENAME=$(basename "${CONFIG_FILE}")
+LOCK_FILE="${LOCK_DIR}/${CONFIG_BASENAME}.lock"
 
 if [ -e "${LOCK_FILE}" ]; then
     LOCKED_PID=$(cat "${LOCK_FILE}" 2>/dev/null)
