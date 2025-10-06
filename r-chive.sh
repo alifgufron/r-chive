@@ -110,7 +110,6 @@ if [ -e "${LOCK_FILE}" ]; then
 fi
 
 echo $$ > "${LOCK_FILE}"
-trap 'rm -f "${LOCK_FILE}"' EXIT HUP INT QUIT TERM
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -126,6 +125,25 @@ log_message() {
     if [ "${LOG_PER_HOST}" = "yes" ] && [ -n "${CURRENT_HOST_LOG_FILE}" ]; then
         echo "${timestamped_message}" >> "${CURRENT_HOST_LOG_FILE}"
     fi
+}
+
+# --- Cleanup and Signal Handling ---
+cleanup() {
+    log_message "CLEANUP: Removing lock file and temporary directory."
+    rm -f "${LOCK_FILE}"
+    rm -rf "${JOB_DIR}"
+}
+
+handle_interrupt() {
+    echo "" # Add a newline in the console for cleaner output
+    log_message "INTERRUPT: Signal received. Shutting down child processes."
+    # Kill all background PIDs that have been tracked
+    if [ -n "${PID_LIST}" ]; then
+        kill ${PID_LIST} 2>/dev/null
+    fi
+    # Exit with code 130 (standard for Ctrl+C)
+    # The EXIT trap will handle the actual file cleanup.
+    exit 130
 }
 
 # ==============================================================================
@@ -156,7 +174,9 @@ if [ -z "${BACKUP_JOBS}" ]; then
 fi
 
 JOB_DIR=$(mktemp -d)
-trap 'rm -rf "${JOB_DIR}"' EXIT HUP INT QUIT TERM
+# Set traps: cleanup on exit, handle_interrupt on INT/QUIT/TERM
+trap cleanup EXIT
+trap handle_interrupt INT QUIT TERM
 
 GLOBAL_PROCESS_STATUS="SUCCESS"
 

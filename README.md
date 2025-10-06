@@ -29,6 +29,7 @@ It performs a "mirror" backup for each specified host. Thanks to `rsync`'s `--re
 - **Flexible Retention Policies**: Clean up old archives and snapshots based on time (days) or count.
 - **Configuration-Specific Locking**: A robust lock file mechanism prevents multiple instances using the same configuration from running simultaneously, while allowing parallel execution of different backup configurations.
 - **Dry Run Mode**: A `--dry-run` mode allows you to test your configuration safely.
+- **Robust Interrupt Handling**: Gracefully terminates all running jobs and performs a clean exit when interrupted (e.g., via `Ctrl+C`).
 
 ## 3. Prerequisites
 
@@ -76,9 +77,30 @@ The script accepts the following command-line arguments:
 | `CREATE_SNAPSHOT`             | Set to `"yes"` to enable space-efficient, hard-link based snapshots **per host**.                                                                                                                                                                                                                |
 | `SNAPSHOT_RETENTION_COUNT`    | Number of snapshots to keep per host.                                                                                                                                                                                                                                                              |
 
-## 5. Setup and Usage
+## 5. Installation and Usage
 
-### Step 1: Create Config File
+### Step 1: Get the Script
+
+There are two primary ways to get `r-chive.sh`.
+
+**Option A: Git Clone (Recommended)**
+
+This is the best way to stay up-to-date with the latest features and bug fixes.
+
+```bash
+git clone https://github.com/alifgufron/r-chive.sh.git
+cd r-chive.sh
+```
+
+**Option B: Download a Release**
+
+If you prefer a stable version, you can download a tagged release from the project's releases page.
+
+1.  Go to the releases page (e.g., `https://github.com/alifgufron/r-chive.sh/releases`).
+2.  Download the `.tar.gz` or `.zip` file for the desired version.
+3.  Extract the archive.
+
+### Step 2: Create Config File
 
 Copy `backup.conf.sample` to a permanent location (e.g., `/usr/local/etc/r-chive/main.conf`) and edit it. Define your jobs in `BACKUP_JOBS` and create the corresponding `_SRC` and `_EXCLUDES` variables.
 
@@ -105,29 +127,29 @@ REPORT_EMAIL="admin@example.com"
 LOG_DIR="/var/log/r-chive"
 ```
 
-### Step 2: Setup SSH Keys
+### Step 3: Setup SSH Keys
 
 Ensure the user running the script on the backup server has passwordless SSH access to the remote servers. Use `ssh-copy-id` for this.
 
-### Step 3: Install Prerequisites
+### Step 4: Install Prerequisites
 
 Ensure `nc` (netcat) is installed on the backup server: `sudo pkg install netcat` (FreeBSD) or `sudo apt install netcat-traditional` (Debian/Ubuntu).
 
-### Step 4: Run a Test
+### Step 5: Run a Test
 
 Always perform a dry run first to verify your configuration and connections. You can also add temporary excludes.
 
 ```bash
 # As the user who owns the SSH keys:
-/path/to/r-chive.sh /usr/local/etc/r-chive/main.conf --dry-run --exclude "*.tmp"
+./r-chive.sh /usr/local/etc/r-chive/main.conf --dry-run --exclude "*.tmp"
 ```
 
 Once satisfied, run it for real:
 ```bash
-/path/to/r-chive.sh /usr/local/etc/r-chive/main.conf
+./r-chive.sh /usr/local/etc/r-chive/main.conf
 ```
 
-### Step 5: Schedule with Cron
+### Step 6: Schedule with Cron
 
 Edit the crontab for the user that runs the backups (`crontab -e`).
 
