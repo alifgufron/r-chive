@@ -72,6 +72,10 @@ REPORT_EMAIL="admin@example.com"
 # Set to "no" for a short, summary-only email.
 REPORT_EMAIL_VERBOSE="no"
 
+# Set to "yes" to send a notification email when a backup job starts.
+# This provides an immediate confirmation that the process has begun.
+SEND_START_NOTIFICATION="no"
+
 # Directory where all log files will be stored.
 # Example: "/var/log/r-chive"
 LOG_DIR="/var/log/r-chive"

@@ -127,6 +127,50 @@ log_message() {
     fi
 }
 
+send_host_start_notification_email() {
+    local host="$1"
+    # The second argument is the list of jobs, passed as a single string
+    local host_jobs_list="$2"
+
+    # Check if email reporting is enabled at all or if this feature is turned off
+    if [ -z "${REPORT_EMAIL}" ] || [ "${SEND_START_NOTIFICATION}" != "yes" ]; then
+        return
+    fi
+
+    local from_email="backup-starter@$(hostname)"
+    local email_subject="${ICON_START} [Backup Started] For Host: ${host} - From $(hostname)"
+    local job_details_body=""
+
+    # Loop through the job names to build the details
+    for job_name in ${host_jobs_list}; do
+        local src_var_name="${job_name}_SRC"
+        local src_value="${!src_var_name}"
+        job_details_body+="  - Job: ${job_name}\n"
+        job_details_body+="    Source: ${src_value}\n\n"
+    done
+
+    # If there are no jobs, don't send an email
+    if [ -z "${job_details_body}" ]; then
+        return
+    fi
+
+    local email_body=""
+    email_body+="A backup process has been initiated for host: ${host}\n\n"
+    email_body+="The following jobs will be executed:\n"
+    email_body+="${job_details_body}"
+    email_body+="Time: $(date +'%Y-%m-%d %H:%M:%S')\n"
+
+    (
+        echo "From: ${from_email}";
+        echo "To: ${REPORT_EMAIL}";
+        echo "Subject: ${email_subject}";
+        echo "MIME-Version: 1.0";
+        echo "Content-Type: text/plain; charset=UTF-8";
+        echo "";
+        echo -e "${email_body}";
+    ) | /usr/sbin/sendmail -t
+}
+
 # --- Cleanup and Signal Handling ---
 cleanup() {
     log_message "CLEANUP: Removing lock file and temporary directory."
@@ -155,6 +199,7 @@ START_TIME=$(date +%s)
 ICON_SUCCESS="✅"
 ICON_FAIL="❌"
 ICON_INFO="ℹ️"
+ICON_START="🚀"
 ICON_CLOCK="⏱️"
 ICON_TARGET="🎯"
 ICON_ARCHIVE="📦"
@@ -241,6 +286,10 @@ for HOST in ${UNIQUE_HOSTS}; do
         fi
     done
 
+    # --- Send Host Start Notification Email ---
+    # Fork the email sending process to not slow down the main script
+    ( send_host_start_notification_email "${HOST}" "${HOST_JOBS}" ) &
+
     # --- Host-level SSH Port Pre-check ---
     # We only need to check connectivity once per host.
     FIRST_JOB_FOR_HOST=$(echo "${HOST_JOBS}" | awk '{print $1}')
@@ -289,10 +338,12 @@ for HOST in ${UNIQUE_HOSTS}; do
                 REMOTE_SOURCE="${REST}"
             fi
 
-            log_message "Starting backup for job '${job_name}': ${target}"
-
             # Destination is the host's Live directory. --relative will create subdirs.
             RSYNC_DEST="${BACKUP_DEST}/${HOST}/Live/"
+
+
+            log_message "Starting backup for job '${job_name}': ${target}"
+
             # Source path for rsync. No trailing slash.
             RSYNC_SOURCE="${USER_HOST}:${REMOTE_SOURCE}"
 
@@ -535,7 +586,7 @@ for HOST in ${UNIQUE_HOSTS}; do
 
     log_message "Constructing and sending email report for host ${HOST}..."
     FROM_EMAIL="backup-reporter@$(hostname)"
-    EMAIL_SUBJECT="Rsync Backup Report for ${HOST} from $(hostname) - Status: ${HOST_OVERALL_STATUS}"
+    EMAIL_SUBJECT="[Backup Finished] Report for ${HOST} - From $(hostname) - Status: ${HOST_OVERALL_STATUS}"
 
     # DEBUG: Print HOST_REPORT_BODY to a file
     echo "${HOST_REPORT_BODY}" > "${JOB_DIR}/debug_host_report_body_${HOST}.txt"
