@@ -182,7 +182,7 @@ send_host_start_notification_email() {
         return
     fi
 
-    local from_email="backup-starter@$(hostname)"
+    local from_email="backup-reporter@$(hostname)"
     local email_subject="${ICON_START} [Backup Started] For Host: ${host} - From $(hostname)"
     local job_details_body=""
 
