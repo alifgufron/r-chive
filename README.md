@@ -21,9 +21,11 @@ It performs a "mirror" backup for each specified host. Thanks to `rsync`'s `--re
 - **Advanced Logging**: 
     - A clean, high-level global log file (`r-chive.log`).
     - Optional, detailed per-host logs organized into subdirectories (`HOST/DATE.log`).
+    - **Live Console Logging**: When run in an interactive terminal, all log output is streamed to the console in real-time with color-coding for readability (Errors in red, success in green, etc.).
     - **Monitor Mode** (`LOG_VERBOSE=yes`): View real-time transfer progress in the per-host log, perfect for `tail -f`.
 - **Flexible Email Reports**: Choose between a concise summary report or a summary with a detailed log file as an attachment. The attached log is always clean, even in monitor mode.
-- **Improved Error Reporting**: Failed jobs now include a short, actionable error message directly in the global log and email body for quicker diagnosis.
+- **Start Notification Emails**: Sends an email notification when a backup process for a host begins, providing immediate confirmation that the job has started.
+- **Improved Error Reporting**: Robustly captures and logs the specific `stderr` output from critical commands (`rsync`, `tar`, `cp`), ensuring no error goes unnoticed. Failed jobs include an actionable error message in the global log and email body.
 - **Parallel Backups**: Executes backups for all jobs on a single host concurrently, significantly reducing total backup time.
 - **Custom SSH Port Support**: Specify a custom SSH port directly in the job's source string.
 - **Flexible Retention Policies**: Clean up old archives and snapshots based on time (days) or count.
@@ -67,6 +69,7 @@ The script accepts the following command-line arguments:
 | `SSH_KEY_PATH`                | (Optional) Absolute path to the **private** SSH key. Leave empty to use the default key.                                                                                                                                                                                                               |
 | `REPORT_EMAIL`                | The destination email address for backup reports.                                                                                                                                                                                                                                                   |
 | `REPORT_EMAIL_VERBOSE`        | Set to `"no"` for a short summary email. Set to `"yes"` to include a detailed log file as an attachment in the email.                                                                                                                                                                                   |
+| `SEND_START_NOTIFICATION`     | Set to `"yes"` to send a notification email when a backup for a host begins.                                                                                                                                                                                                                             |
 | `LOG_DIR`                     | The directory where log files will be stored.                                                                                                                                                                                                                                                             |
 | `LOG_PER_HOST`                | Set to `"yes"` to create detailed, date-stamped log files inside a per-host subdirectory (e.g., `LOG_DIR/HOST/DATE.log`). Highly recommended.                                                                                                                                                              |
 | `LOG_VERBOSE`                 | Set to `"yes"` to enable **Monitor Mode**. This adds `--progress` to `rsync`, showing real-time file transfer progress in the per-host log. Useful for monitoring large backups with `tail -f`. This does not affect the content of the email report.                                                  |

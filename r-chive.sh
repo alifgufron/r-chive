@@ -86,6 +86,29 @@ if [ "$DRY_RUN_MODE" = "yes" ]; then
     echo "--- DRY RUN MODE ENABLED ---"
 fi
 
+# --- Console Mode & Color Initialization ---
+CONSOLE_MODE="no"
+# Check if stdout is a terminal
+if [ -t 1 ]; then
+    CONSOLE_MODE="yes"
+fi
+
+# Define colors, but only if in console mode
+if [ "${CONSOLE_MODE}" = "yes" ]; then
+    COLOR_RED='\033[0;31m'
+    COLOR_GREEN='\033[0;32m'
+    COLOR_YELLOW='\033[0;33m'
+    COLOR_BLUE='\033[0;34m'
+    COLOR_NC='\033[0m' # No Color
+else
+    # If not in console mode, make color variables empty
+    COLOR_RED=''
+    COLOR_GREEN=''
+    COLOR_YELLOW=''
+    COLOR_BLUE=''
+    COLOR_NC=''
+fi
+
 LOG_FILE="${LOG_DIR}/r-chive.log"
 
 # --- Lock File Management ---
@@ -117,13 +140,31 @@ echo $$ > "${LOCK_FILE}"
 
 log_message() {
     local message="$1"
-    local timestamped_message
-    timestamped_message="$(date +' %Y-%m-%d %H:%M:%S') - ${message}"
+    local color="${COLOR_NC}" # Default to no color
 
-    echo "${timestamped_message}" >> "${LOG_FILE}"
+    # Determine color based on message content
+    # Using `case` for efficient string matching
+    case "${message}" in
+        ERROR* | FATAL* | FAILED*) color="${COLOR_RED}" ;;
+        SUCCESS*) color="${COLOR_GREEN}" ;;
+        WARN* | WARNING*) color="${COLOR_YELLOW}" ;;
+        INFO* | Starting* | Executing* | Waiting* | Processing* | Constructing*) color="${COLOR_BLUE}" ;;
+    esac
 
+    local timestamp
+    timestamp=$(date +' %Y-%m-%d %H:%M:%S')
+    local plain_message="${timestamp} - ${message}"
+    local colorized_message="${timestamp} - ${color}${message}${COLOR_NC}"
+
+    # Log to files
+    echo "${plain_message}" >> "${LOG_FILE}"
     if [ "${LOG_PER_HOST}" = "yes" ] && [ -n "${CURRENT_HOST_LOG_FILE}" ]; then
-        echo "${timestamped_message}" >> "${CURRENT_HOST_LOG_FILE}"
+        echo "${plain_message}" >> "${CURRENT_HOST_LOG_FILE}"
+    fi
+
+    # Also log to console if in interactive mode
+    if [ "${CONSOLE_MODE}" = "yes" ]; then
+        echo -e "${colorized_message}"
     fi
 }
 
@@ -229,7 +270,7 @@ GLOBAL_PROCESS_STATUS="SUCCESS"
 UNIQUE_HOSTS=""
 CONFIG_IS_VALID="yes"
 
-log_message "Validating job configurations..."
+log_message "INFO: Validating job configurations..."
 for job_name in ${BACKUP_JOBS}; do
     # 1. Validate job name format for shell variable compatibility
     if ! echo "${job_name}" | grep -qE '^[a-zA-Z0-9_]+$'; then
@@ -445,43 +486,47 @@ for HOST in ${UNIQUE_HOSTS}; do
         HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
 
         if [ ${RSYNC_EXIT_CODE} -eq 0 ]; then
-            log_message "Backup for job '${job_name}' SUCCESS."
+            log_message "SUCCESS: Backup for job '${job_name}'."
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_SUCCESS} Job: ${job_name} (${target_string})\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
 
             if [ "${CREATE_ARCHIVE}" = "yes" ]; then
                 if [ "${DRY_RUN_MODE}" = "yes" ]; then
-                    log_message "--- Archive creation SKIPPED for job '${job_name}' (Dry Run Mode) ---"
+                    log_message "WARNING: Archive creation SKIPPED for job '${job_name}' (Dry Run Mode) ---"
                     HOST_REPORT_BODY="${HOST_REPORT_BODY}Archive Status: SKIPPED (Dry Run)\n"
                 else
-                    log_message "--- Starting Archive Creation for job '${job_name}' ---"
+                    log_message "INFO: Starting Archive Creation for job '${job_name}' ---"
                     SANITISED_FILENAME_PART=$(basename "${TARGET_DEST}")
                     YEAR=$(date +'%Y'); MONTH=$(date +'%m')
                     ARCHIVE_DIR="${ARCHIVE_DEST}/${HOST}/${YEAR}/${MONTH}"
                     mkdir -p "${ARCHIVE_DIR}"
                     ARCHIVE_FILE="${ARCHIVE_DIR}/${SANITISED_FILENAME_PART}-$(date +'%Y-%m-%d_%H%M%S').tar.zst"
-                    log_message "Creating compressed archive: ${ARCHIVE_FILE}"
-                    tar --zstd -cf "${ARCHIVE_FILE}" -C "${TARGET_DEST}" .
+                    log_message "INFO: Creating compressed archive: ${ARCHIVE_FILE}"
+                    
+                    # Execute tar and capture any error output
+                    TAR_OUTPUT=$(tar --zstd -cf "${ARCHIVE_FILE}" -C "${TARGET_DEST}" . 2>&1)
+                    TAR_EXIT_CODE=$?
 
-                    if [ $? -eq 0 ]; then
+                    if [ ${TAR_EXIT_CODE} -eq 0 ]; then
                         ARCHIVE_SIZE=$(du -h "${ARCHIVE_FILE}" | cut -f1)
-                        log_message "Archive for job '${job_name}' created successfully. Size: ${ARCHIVE_SIZE}"
+                        log_message "SUCCESS: Archive for job '${job_name}' created successfully. Size: ${ARCHIVE_SIZE}"
                         HOST_REPORT_BODY="${HOST_REPORT_BODY}Archive Status: SUCCESS - ${ARCHIVE_FILE} (Size: ${ARCHIVE_SIZE})\n"
 
                         if [ -n "${ARCHIVE_RETENTION_DAYS}" ] && [ "${ARCHIVE_RETENTION_DAYS}" -gt 0 ]; then
-                            log_message "Retention Policy: Deleting archives for job '${job_name}' older than ${ARCHIVE_RETENTION_DAYS} days."
-                            find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f -mtime "+${ARCHIVE_RETENTION_DAYS}" -print -delete | while IFS= read -r f; do [ -n "$f" ] && log_message "Retention (by day): Deleted old archive: $f"; done
+                            log_message "INFO: Retention Policy: Deleting archives for job '${job_name}' older than ${ARCHIVE_RETENTION_DAYS} days."
+                            find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f -mtime "+${ARCHIVE_RETENTION_DAYS}" -print -delete | while IFS= read -r f; do [ -n "$f" ] && log_message "INFO: Retention (by day): Deleted old archive: $f"; done
                         elif [ -n "${ARCHIVE_RETENTION_COUNT}" ] && [ "${ARCHIVE_RETENTION_COUNT}" -gt 0 ]; then
                             ARCHIVES_FOUND=$(find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f)
                             COUNT=$(echo "${ARCHIVES_FOUND}" | wc -l)
                             if [ "$COUNT" -gt "${ARCHIVE_RETENTION_COUNT}" ]; then
                                 NUM_TO_DELETE=$((COUNT - ARCHIVE_RETENTION_COUNT))
-                                log_message "Retention Policy: (by count) Found ${COUNT} archives, limit is ${ARCHIVE_RETENTION_COUNT}. Deleting ${NUM_TO_DELETE} oldest."
-                                find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f -exec stat -f '%m %N' {} + | sort -n | head -n "${NUM_TO_DELETE}" | cut -d' ' -f2- | while IFS= read -r f; do [ -n "$f" ] && log_message "Retention (by count): Deleting old archive: $f" && rm -f "$f"; done
+                                log_message "INFO: Retention Policy: (by count) Found ${COUNT} archives, limit is ${ARCHIVE_RETENTION_COUNT}. Deleting ${NUM_TO_DELETE} oldest."
+                                find "${ARCHIVE_DEST}/${HOST}" -name "${SANITISED_FILENAME_PART}-*.tar.zst" -type f -exec stat -f '%m %N' {} + | sort -n | head -n "${NUM_TO_DELETE}" | cut -d' ' -f2- | while IFS= read -r f; do [ -n "$f" ] && log_message "INFO: Retention (by count): Deleting old archive: $f" && rm -f "$f"; done
                             fi
                         fi
                     else
-                        log_message "ERROR: Failed to create archive for job '${job_name}'."
+                        log_message "ERROR: Failed to create archive for job '${job_name}'. Exit Code: ${TAR_EXIT_CODE}"
+                        log_message "ERROR Detail: ${TAR_OUTPUT}"
                         HOST_REPORT_BODY="${HOST_REPORT_BODY}Archive Status: FAILED\n"
                         HOST_OVERALL_STATUS="ERROR"
                         GLOBAL_PROCESS_STATUS="ERROR"
@@ -521,11 +566,11 @@ for HOST in ${UNIQUE_HOSTS}; do
 
     if [ "${CREATE_SNAPSHOT}" = "yes" ] && [ "${SNAPSHOT_RETENTION_COUNT}" -gt 0 ]; then
         if [ "${DRY_RUN_MODE}" = "yes" ]; then
-            log_message "--- Host-level snapshot creation SKIPPED for host ${HOST} (Dry Run Mode) ---"
+            log_message "WARNING: Host-level snapshot creation SKIPPED for host ${HOST} (Dry Run Mode) ---"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status (Host ${HOST}): SKIPPED (Dry Run)\n"
         else
-            log_message "--- Starting Host-level Snapshot Creation for host ${HOST} ---"
+            log_message "INFO: Starting Host-level Snapshot Creation for host ${HOST} ---"
             HOST_BACKUP_DIR="${BACKUP_DEST}/${HOST}/Live"
             HOST_SNAPSHOT_BASE_DIR="${BACKUP_DEST}/${HOST}"
 
@@ -553,14 +598,19 @@ for HOST in ${UNIQUE_HOSTS}; do
                 done
 
                 NEW_SNAPSHOT="${HOST_SNAPSHOT_BASE_DIR}/Snapshot.0"
-                log_message "Creating new snapshot: ${NEW_SNAPSHOT} from ${HOST_BACKUP_DIR}"
-                cp -al "${HOST_BACKUP_DIR}" "${NEW_SNAPSHOT}"
-                if [ $? -eq 0 ]; then
-                    log_message "Snapshot for host ${HOST} created successfully."
+                log_message "INFO: Creating new snapshot: ${NEW_SNAPSHOT} from ${HOST_BACKUP_DIR}"
+                
+                # Execute cp and capture any error output
+                CP_OUTPUT=$(cp -al "${HOST_BACKUP_DIR}" "${NEW_SNAPSHOT}" 2>&1)
+                CP_EXIT_CODE=$?
+
+                if [ ${CP_EXIT_CODE} -eq 0 ]; then
+                    log_message "SUCCESS: Snapshot for host ${HOST} created successfully."
                     HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
                     HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status (Host ${HOST}): SUCCESS\n"
                 else
-                    log_message "ERROR: Failed to create snapshot for host ${HOST}."
+                    log_message "ERROR: Failed to create snapshot for host ${HOST}. Exit Code: ${CP_EXIT_CODE}"
+                    log_message "ERROR Detail: ${CP_OUTPUT}"
                     HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
                     HOST_REPORT_BODY="${HOST_REPORT_BODY}Snapshot Status (Host ${HOST}): FAILED\n"
                     HOST_OVERALL_STATUS="ERROR"
