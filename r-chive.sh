@@ -40,7 +40,7 @@ while [ "$#" -gt 0 ]; do
             DRY_RUN_MODE="yes"
             RSYNC_EXTRA_OPTS="-n"
             shift # past argument
-            ;;
+            ;; 
         --exclude)
             if [ -n "$2" ]; then
                 CMD_LINE_EXCLUDES+=("$2")
@@ -49,6 +49,10 @@ while [ "$#" -gt 0 ]; do
                 echo "ERROR: --exclude requires an argument." >&2
                 exit 1
             fi
+            ;;
+        --check-conf)
+            CHECK_CONF_MODE="yes"
+            shift # past argument
             ;;
         *)
             # This should be the config file
@@ -66,7 +70,7 @@ while [ "$#" -gt 0 ]; do
                 echo "Usage: $0 <path_to_config_file> [--dry-run] [--exclude PATTERN]..." >&2
                 exit 1
             fi
-            ;;
+            ;; 
     esac
 done
 
@@ -145,10 +149,10 @@ log_message() {
     # Determine color based on message content
     # Using `case` for efficient string matching
     case "${message}" in
-        ERROR* | FATAL* | FAILED*) color="${COLOR_RED}" ;;
-        SUCCESS*) color="${COLOR_GREEN}" ;;
-        WARN* | WARNING*) color="${COLOR_YELLOW}" ;;
-        INFO* | Starting* | Executing* | Waiting* | Processing* | Constructing*) color="${COLOR_BLUE}" ;;
+        ERROR* | FATAL* | FAILED*) color="${COLOR_RED}" ;; 
+        SUCCESS*) color="${COLOR_GREEN}" ;; 
+        WARN* | WARNING*) color="${COLOR_YELLOW}" ;; 
+        INFO* | Starting* | Executing* | Waiting* | Processing* | Constructing*) color="${COLOR_BLUE}" ;; 
     esac
 
     local timestamp
@@ -231,6 +235,100 @@ handle_interrupt() {
     exit 130
 }
 
+run_configuration_check() {
+    log_message "INFO: Running comprehensive configuration check..."
+    local overall_check_status="SUCCESS"
+
+    print_check_result() {
+        local status="$1"
+        local message="$2"
+        if [ "${status}" = "SUCCESS" ]; then
+            log_message "SUCCESS: ${message}"
+        else
+            log_message "ERROR: ${message}"
+            overall_check_status="FAILURE"
+        fi
+    }
+
+    # 1. Check local directories
+    log_message "INFO: -------------------- [1/3] Checking Local Directories --------------------"
+    [ -d "${LOG_DIR}" ] && [ -w "${LOG_DIR}" ] && print_check_result "SUCCESS" "LOG_DIR (${LOG_DIR}) exists and is writable." || print_check_result "FAILURE" "LOG_DIR (${LOG_DIR}) does not exist or is not writable."
+    [ -d "${BACKUP_DEST}" ] && [ -w "${BACKUP_DEST}" ] && print_check_result "SUCCESS" "BACKUP_DEST (${BACKUP_DEST}) exists and is writable." || print_check_result "FAILURE" "BACKUP_DEST (${BACKUP_DEST}) does not exist or is not writable."
+    if [ "${CREATE_ARCHIVE}" = "yes" ]; then
+        [ -d "${ARCHIVE_DEST}" ] && [ -w "${ARCHIVE_DEST}" ] && print_check_result "SUCCESS" "ARCHIVE_DEST (${ARCHIVE_DEST}) exists and is writable." || print_check_result "FAILURE" "ARCHIVE_DEST (${ARCHIVE_DEST}) does not exist or is not writable."
+    fi
+
+    # 2. Check hosts and jobs
+    log_message "INFO: -------------------- [2/3] Checking Remote Hosts & Jobs --------------------"
+    if [ -z "${UNIQUE_HOSTS}" ]; then
+        log_message "WARNING: No hosts to check."
+    fi
+
+    for HOST in ${UNIQUE_HOSTS}; do
+        log_message "INFO: --- Checking Host: ${HOST} ---"
+        local host_status="SUCCESS"
+
+        # Get connection details from the first job for this host
+        local first_job_for_host=$(echo "${BACKUP_JOBS}" | tr ' ' '\n' | while read -r job_name; do src_var="${job_name}_SRC"; src_val="${!src_var}"; if [[ "${src_val}" == *"@${HOST}"* ]]; then echo "${job_name}"; break; fi; done)
+        local src_var_name="${first_job_for_host}_SRC"
+        local target="${!src_var_name}"
+        local user_host=$(echo "${target}" | cut -d':' -f1)
+        local rest=$(echo "${target}" | cut -d':' -f2-)
+        local first_part=$(echo "${rest}" | cut -d':' -f1)
+        local port="22"
+        if echo "${first_part}" | grep -Eq '^[0-9]+$'; then
+            port="${first_part}"
+        fi
+        local ssh_opts="-o BatchMode=yes -o ConnectTimeout=5"
+        [ -n "${SSH_KEY_PATH}" ] && ssh_opts="${ssh_opts} -i ${SSH_KEY_PATH}"
+
+        # Check 1: Port connectivity
+        nc -zvw1 "${HOST}" "${port}" >/dev/null 2>&1
+        if [ $? -eq 0 ]; then print_check_result "SUCCESS" "Port connectivity to ${HOST} on port ${port} is OK."; else print_check_result "FAILURE" "Cannot connect to ${HOST} on port ${port}."; host_status="FAILURE"; fi
+
+        # Check 2: SSH Authentication (non-interactive)
+        ssh ${ssh_opts} -p "${port}" "${user_host}" exit >/dev/null 2>&1
+        if [ $? -eq 0 ]; then print_check_result "SUCCESS" "SSH authentication for ${user_host} seems OK (passwordless)."; else print_check_result "FAILURE" "SSH authentication for ${user_host} failed. Check keys or if it requires a password."; host_status="FAILURE"; fi
+
+        # If host checks failed, no point in checking jobs for it
+        if [ "${host_status}" = "FAILURE" ]; then
+            log_message "WARNING: Skipping job checks for ${HOST} due to connection/auth failure."
+            continue
+        fi
+
+        # Check 3: Per-job remote source directory
+        local host_jobs=""
+        for job_name in ${BACKUP_JOBS}; do
+            local current_job_src_var="${job_name}_SRC"
+            local current_job_src_val="${!current_job_src_var}"
+            if [[ "${current_job_src_val}" == *"@${HOST}"* ]]; then 
+                host_jobs="${host_jobs} ${job_name}"
+            fi
+        done
+        for job_name in ${host_jobs}; do
+            local job_src_var="${job_name}_SRC"
+            local job_target="${!job_src_var}"
+            local job_rest=$(echo "${job_target}" | cut -d':' -f2-)
+            local job_remote_source="${job_rest}"
+            if echo "${job_rest}" | cut -d':' -f1 | grep -Eq '^[0-9]+$'; then
+                job_remote_source=$(echo "${job_rest}" | cut -d':' -f2-)
+            fi
+            
+            ssh ${ssh_opts} -p "${port}" "${user_host}" "test -d '${job_remote_source}'" >/dev/null 2>&1
+            if [ $? -eq 0 ]; then print_check_result "SUCCESS" "Job '${job_name}': Remote source '${job_remote_source}' exists."; else print_check_result "FAILURE" "Job '${job_name}': Remote source '${job_remote_source}' does not exist or is not a directory."; fi
+        done
+    done
+
+    log_message "INFO: -------------------- [3/3] Check Summary --------------------"
+    if [ "${overall_check_status}" = "SUCCESS" ]; then
+        log_message "SUCCESS: All configuration checks passed."
+        exit 0
+    else
+        log_message "FAILURE: One or more configuration checks failed. Please review the errors above."
+        exit 1
+    fi
+}
+
 # ==============================================================================
 # MAIN SCRIPT LOGIC
 # ==============================================================================
@@ -302,6 +400,11 @@ if [ "${CONFIG_IS_VALID}" = "no" ]; then
     UNIQUE_HOSTS="" # Clear hosts to prevent the next loop from running
 fi
 UNIQUE_HOSTS=$(echo "${UNIQUE_HOSTS}" | tr ' ' '\n' | sort -u)
+
+# --- Execute Configuration Check if Requested ---
+if [ "${CHECK_CONF_MODE}" = "yes" ]; then
+    run_configuration_check
+fi
 
 # ==============================================================================
 # PROCESS EACH HOST
@@ -553,12 +656,9 @@ for HOST in ${UNIQUE_HOSTS}; do
             HOST_OVERALL_STATUS="ERROR"
             GLOBAL_PROCESS_STATUS="ERROR"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_FAIL} Job: ${job_name} (${target_string})\n"
-            HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: FAILED (Code: ${RSYNC_EXIT_CODE})
-"
-            HOST_REPORT_BODY="${HOST_REPORT_BODY}Error Detail:
-"
-            HOST_REPORT_BODY="${HOST_REPORT_BODY}${SHORT_ERROR_MESSAGE}
-"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: FAILED (Code: ${RSYNC_EXIT_CODE})\n"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}Error Detail:\n"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}${SHORT_ERROR_MESSAGE}\n"
         fi
 
         HOST_PROCESSED_TARGETS_LIST="${HOST_PROCESSED_TARGETS_LIST}  ${ICON_TARGET} ${job_name} (${target_string})\n"
@@ -641,7 +741,38 @@ for HOST in ${UNIQUE_HOSTS}; do
     # DEBUG: Print HOST_REPORT_BODY to a file
     echo "${HOST_REPORT_BODY}" > "${JOB_DIR}/debug_host_report_body_${HOST}.txt"
 
+    # --- Email Sending Logic with Attachment Size Check ---
+    # Default to sending a simple email
+    SEND_WITH_ATTACHMENT="no"
+
     if [ "${REPORT_EMAIL_VERBOSE}" = "yes" ] && [ -f "${ATTACHMENT_FILE}" ]; then
+        # Verbose mode is on, now check the attachment size
+        if [ -n "${MAX_ATTACHMENT_SIZE_MB}" ] && [ "${MAX_ATTACHMENT_SIZE_MB}" -gt 0 ]; then
+            # Size limit is configured, let's check the file
+            ATTACHMENT_SIZE_BYTES=$(stat -f%z "${ATTACHMENT_FILE}")
+            ATTACHMENT_SIZE_MB=$((ATTACHMENT_SIZE_BYTES / 1024 / 1024))
+
+            if [ ${ATTACHMENT_SIZE_MB} -ge ${MAX_ATTACHMENT_SIZE_MB} ]; then
+                # Attachment is TOO BIG. Add a warning to the body and force simple email.
+                log_message "WARNING: Attachment size (${ATTACHMENT_SIZE_MB}MB) exceeds limit of ${MAX_ATTACHMENT_SIZE_MB}MB. Sending report without attachment."
+                WARNING_BODY="--------------------------------------------------\n"
+                WARNING_BODY="${WARNING_BODY}⚠️ WARNING: The detailed log file was not attached because its size (${ATTACHMENT_SIZE_MB} MB) exceeds the configured limit (${MAX_ATTACHMENT_SIZE_MB} MB).\n"
+                WARNING_BODY="${WARNING_BODY}Please check the full log on the server: ${CURRENT_HOST_LOG_FILE:-${LOG_FILE}}\n"
+                WARNING_BODY="${WARNING_BODY}--------------------------------------------------\n"
+                HOST_REPORT_BODY="${HOST_REPORT_BODY}${WARNING_BODY}"
+                SEND_WITH_ATTACHMENT="no"
+            else
+                # Attachment size is OK.
+                SEND_WITH_ATTACHMENT="yes"
+            fi
+        else
+            # No size limit is configured, so we can send it.
+            SEND_WITH_ATTACHMENT="yes"
+        fi
+    fi
+
+    if [ "${SEND_WITH_ATTACHMENT}" = "yes" ]; then
+        # Send email WITH attachment
         BOUNDARY="R-CHIVE-BOUNDARY-$(date +%s)"
         (
             echo "From: ${FROM_EMAIL}";
@@ -663,9 +794,10 @@ for HOST in ${UNIQUE_HOSTS}; do
             echo "";
             cat "${ATTACHMENT_FILE}";
             echo "";
-            echo "--${BOUNDARY}--";
+            echo "--${BOUNDARY}--"
         ) | /usr/sbin/sendmail -t
     else
+        # Send email WITHOUT attachment (either by choice, or because it was too big)
         (
             echo "From: ${FROM_EMAIL}";
             echo "To: ${REPORT_EMAIL}";

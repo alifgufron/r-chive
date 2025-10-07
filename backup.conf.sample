@@ -76,6 +76,9 @@ REPORT_EMAIL_VERBOSE="no"
 # This provides an immediate confirmation that the process has begun.
 SEND_START_NOTIFICATION="no"
 
+# The maximum size (in MB) for an email attachment. If a detailed log file exceeds this, it won't be attached. Set to 0 to disable the limit.
+MAX_ATTACHMENT_SIZE_MB="0"
+
 # Directory where all log files will be stored.
 # Example: "/var/log/r-chive"
 LOG_DIR="/var/log/r-chive"
