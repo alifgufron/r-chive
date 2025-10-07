@@ -571,13 +571,30 @@ for HOST in ${UNIQUE_HOSTS}; do
         # The full rsync output is now streamed directly to the per-host log in real-time via tee.
         # This block is no longer needed and has been removed to prevent duplicate logging.
 
-        # Format the rsync output for better readability in the attachment
-        ITEMIZED_LIST=$(echo "${RSYNC_STATS}" | grep -E '^[.>]' || true)
-        STATS_BLOCK=$(echo "${RSYNC_STATS}" | grep -Ev '^[.>]' || true)
+        # --- Format the rsync output for structured reporting ---
 
+        # 1. Extract Deletions
+        DELETION_REPORT=$(echo "${RSYNC_STATS}" | grep '^\*deleting' || true)
+
+        # 2. Extract Symlinks
+        SYMLINK_REPORT=$(echo "${RSYNC_STATS}" | grep -E '^[.>]L' || true)
+
+        # 3. Extract other file changes (excluding symlinks and deletions, which are handled separately)
+        ITEMIZED_LIST=$(echo "${RSYNC_STATS}" | grep -E '^[.>]' | grep -vE '^[.>]L' || true)
+
+        # 4. Extract the final summary block (excluding all itemized lines and deletions)
+        STATS_BLOCK=$(echo "${RSYNC_STATS}" | grep -Ev '^[.>]|^\*deleting' || true)
+
+        # 5. Build the formatted report string, section by section
         FORMATTED_STATS=""
         if [ -n "${ITEMIZED_LIST}" ]; then
-            FORMATTED_STATS="=== Change Details ===\n${ITEMIZED_LIST}\n\n"
+            FORMATTED_STATS="${FORMATTED_STATS}=== Change Details ===\n${ITEMIZED_LIST}\n\n"
+        fi
+        if [ -n "${DELETION_REPORT}" ]; then
+            FORMATTED_STATS="${FORMATTED_STATS}=== Deletion Report ===\n${DELETION_REPORT}\n\n"
+        fi
+        if [ -n "${SYMLINK_REPORT}" ]; then
+            FORMATTED_STATS="${FORMATTED_STATS}=== Symlink Report ===\n${SYMLINK_REPORT}\n\n"
         fi
         FORMATTED_STATS="${FORMATTED_STATS}=== Sync Statistics ===\n${STATS_BLOCK}"
 
