@@ -10,6 +10,10 @@
 # CORE JOB CONFIGURATION
 # ==============================================================================
 
+# A descriptive name for this backup set (e.g., "Daily", "Weekly", "Web Servers").
+# This will be used in email subject lines.
+BACKUP_NAME="General"
+
 # 1. Define all backup job names here, separated by spaces.
 #    To activate a job, add its name to this list.
 #    To deactivate a job, simply remove its name.

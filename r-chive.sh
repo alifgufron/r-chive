@@ -85,6 +85,16 @@ fi
 echo "INFO: Using configuration file: ${CONFIG_FILE}"
 . "${CONFIG_FILE}"
 
+# If dry-run mode is active, override the backup name for clarity in reports.
+if [ "${DRY_RUN_MODE}" = "yes" ]; then
+    BACKUP_NAME="Dry Run"
+fi
+
+# --- Format BACKUP_NAME to Title Case ---
+# Provide a default if not set, then format it nicely (e.g., "dAiLy" -> "Daily").
+BACKUP_NAME=${BACKUP_NAME:-"General"}
+BACKUP_NAME=$(echo "${BACKUP_NAME}" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2));}1')
+
 # Announce dry run mode if enabled
 if [ "$DRY_RUN_MODE" = "yes" ]; then
     echo "--- DRY RUN MODE ENABLED ---"
@@ -183,7 +193,7 @@ send_host_start_notification_email() {
     fi
 
     local from_email="backup-reporter@$(hostname)"
-    local email_subject="${ICON_START} [Backup Started] For Host: ${host} - From $(hostname)"
+    local email_subject="${ICON_START} [Backup ${BACKUP_NAME} Started] For Host: ${host} - From $(hostname)"
     local job_details_body=""
 
     # Loop through the job names to build the details
@@ -266,57 +276,83 @@ run_configuration_check() {
 
     for HOST in ${UNIQUE_HOSTS}; do
         log_message "INFO: --- Checking Host: ${HOST} ---"
-        local host_status="SUCCESS"
 
-        # Get connection details from the first job for this host
-        local first_job_for_host=$(echo "${BACKUP_JOBS}" | tr ' ' '\n' | while read -r job_name; do src_var="${job_name}_SRC"; src_val="${!src_var}"; if [[ "${src_val}" == *"@${HOST}"* ]]; then echo "${job_name}"; break; fi; done)
-        local src_var_name="${first_job_for_host}_SRC"
-        local target="${!src_var_name}"
-        local user_host=$(echo "${target}" | cut -d':' -f1)
-        local rest=$(echo "${target}" | cut -d':' -f2-)
-        local first_part=$(echo "${rest}" | cut -d':' -f1)
-        local port="22"
-        if echo "${first_part}" | grep -Eq '^[0-9]+$'; then
-            port="${first_part}"
-        fi
-        local ssh_opts="-o BatchMode=yes -o ConnectTimeout=5"
-        [ -n "${SSH_KEY_PATH}" ] && ssh_opts="${ssh_opts} -i ${SSH_KEY_PATH}"
+        if [ "${HOST}" = "localhost" ]; then
+            # --- LOCALHOST CHECKS ---
+            log_message "INFO: Host is localhost, performing local directory checks..."
+            local host_jobs=""
+            for job_name in ${BACKUP_JOBS}; do
+                local current_job_src_var="${job_name}_SRC"
+                local current_job_src_val="${!current_job_src_var}"
+                if [[ "${current_job_src_val}" == *"@${HOST}"* ]] || [[ "${current_job_src_val}" == "${HOST}:"* ]]; then 
+                    host_jobs="${host_jobs} ${job_name}"
+                fi
+            done
+            for job_name in ${host_jobs}; do
+                local job_src_var="${job_name}_SRC"
+                local job_target="${!job_src_var}"
+                local local_path=$(echo "${job_target}" | cut -d':' -f2-)
+                
+                if [ -d "${local_path}" ]; then
+                    print_check_result "SUCCESS" "Job '${job_name}': Local source '${local_path}' exists."
+                else
+                    print_check_result "FAILURE" "Job '${job_name}': Local source '${local_path}' does not exist or is not a directory."
+                fi
+            done
+        else
+            # --- REMOTE HOST CHECKS ---
+            local host_status="SUCCESS"
 
-        # Check 1: Port connectivity
-        nc -zvw1 "${HOST}" "${port}" >/dev/null 2>&1
-        if [ $? -eq 0 ]; then print_check_result "SUCCESS" "Port connectivity to ${HOST} on port ${port} is OK."; else print_check_result "FAILURE" "Cannot connect to ${HOST} on port ${port}."; host_status="FAILURE"; fi
-
-        # Check 2: SSH Authentication (non-interactive)
-        ssh ${ssh_opts} -p "${port}" "${user_host}" exit >/dev/null 2>&1
-        if [ $? -eq 0 ]; then print_check_result "SUCCESS" "SSH authentication for ${user_host} seems OK (passwordless)."; else print_check_result "FAILURE" "SSH authentication for ${user_host} failed. Check keys or if it requires a password."; host_status="FAILURE"; fi
-
-        # If host checks failed, no point in checking jobs for it
-        if [ "${host_status}" = "FAILURE" ]; then
-            log_message "WARNING: Skipping job checks for ${HOST} due to connection/auth failure."
-            continue
-        fi
-
-        # Check 3: Per-job remote source directory
-        local host_jobs=""
-        for job_name in ${BACKUP_JOBS}; do
-            local current_job_src_var="${job_name}_SRC"
-            local current_job_src_val="${!current_job_src_var}"
-            if [[ "${current_job_src_val}" == *"@${HOST}"* ]]; then 
-                host_jobs="${host_jobs} ${job_name}"
+            # Get connection details from the first job for this host
+            local first_job_for_host=$(echo "${BACKUP_JOBS}" | tr ' ' '\n' | while read -r job_name; do src_var="${job_name}_SRC"; src_val="${!src_var}"; if [[ "${src_val}" == *"@${HOST}"* ]]; then echo "${job_name}"; break; fi; done)
+            local src_var_name="${first_job_for_host}_SRC"
+            local target="${!src_var_name}"
+            local user_host=$(echo "${target}" | cut -d':' -f1)
+            local rest=$(echo "${target}" | cut -d':' -f2-)
+            local first_part=$(echo "${rest}" | cut -d':' -f1)
+            local port="22"
+            if echo "${first_part}" | grep -Eq '^[0-9]+$'; then
+                port="${first_part}"
             fi
-        done
-        for job_name in ${host_jobs}; do
-            local job_src_var="${job_name}_SRC"
-            local job_target="${!job_src_var}"
-            local job_rest=$(echo "${job_target}" | cut -d':' -f2-)
-            local job_remote_source="${job_rest}"
-            if echo "${job_rest}" | cut -d':' -f1 | grep -Eq '^[0-9]+$'; then
-                job_remote_source=$(echo "${job_rest}" | cut -d':' -f2-)
+            local ssh_opts="-o BatchMode=yes -o ConnectTimeout=5"
+            [ -n "${SSH_KEY_PATH}" ] && ssh_opts="${ssh_opts} -i ${SSH_KEY_PATH}"
+
+            # Check 1: Port connectivity
+            nc -zvw1 "${HOST}" "${port}" >/dev/null 2>&1
+            if [ $? -eq 0 ]; then print_check_result "SUCCESS" "Port connectivity to ${HOST} on port ${port} is OK."; else print_check_result "FAILURE" "Cannot connect to ${HOST} on port ${port}."; host_status="FAILURE"; fi
+
+            # Check 2: SSH Authentication (non-interactive)
+            ssh ${ssh_opts} -p "${port}" "${user_host}" exit >/dev/null 2>&1
+            if [ $? -eq 0 ]; then print_check_result "SUCCESS" "SSH authentication for ${user_host} seems OK (passwordless)."; else print_check_result "FAILURE" "SSH authentication for ${user_host} failed. Check keys or if it requires a password."; host_status="FAILURE"; fi
+
+            # If host checks failed, no point in checking jobs for it
+            if [ "${host_status}" = "FAILURE" ]; then
+                log_message "WARNING: Skipping job checks for ${HOST} due to connection/auth failure."
+                continue
             fi
-            
-            ssh ${ssh_opts} -p "${port}" "${user_host}" "test -d '${job_remote_source}'" >/dev/null 2>&1
-            if [ $? -eq 0 ]; then print_check_result "SUCCESS" "Job '${job_name}': Remote source '${job_remote_source}' exists."; else print_check_result "FAILURE" "Job '${job_name}': Remote source '${job_remote_source}' does not exist or is not a directory."; fi
-        done
+
+            # Check 3: Per-job remote source directory
+            local host_jobs=""
+            for job_name in ${BACKUP_JOBS}; do
+                local current_job_src_var="${job_name}_SRC"
+                local current_job_src_val="${!current_job_src_var}"
+                if [[ "${current_job_src_val}" == *"@${HOST}"* ]]; then 
+                    host_jobs="${host_jobs} ${job_name}"
+                fi
+            done
+            for job_name in ${host_jobs}; do
+                local job_src_var="${job_name}_SRC"
+                local job_target="${!job_src_var}"
+                local job_rest=$(echo "${job_target}" | cut -d':' -f2-)
+                local job_remote_source="${job_rest}"
+                if echo "${job_rest}" | cut -d':' -f1 | grep -Eq '^[0-9]+$'; then
+                    job_remote_source=$(echo "${job_rest}" | cut -d':' -f2-)
+                fi
+                
+                ssh ${ssh_opts} -p "${port}" "${user_host}" "test -d '${job_remote_source}'" >/dev/null 2>&1
+                if [ $? -eq 0 ]; then print_check_result "SUCCESS" "Job '${job_name}': Remote source '${job_remote_source}' exists."; else print_check_result "FAILURE" "Job '${job_name}': Remote source '${job_remote_source}' does not exist or is not a directory."; fi
+            done
+        fi
     done
 
     log_message "INFO: -------------------- [3/3] Check Summary --------------------"
@@ -434,32 +470,34 @@ for HOST in ${UNIQUE_HOSTS}; do
     # Fork the email sending process to not slow down the main script
     ( send_host_start_notification_email "${HOST}" "${HOST_JOBS}" ) &
 
-    # --- Host-level SSH Port Pre-check ---
-    # We only need to check connectivity once per host.
-    FIRST_JOB_FOR_HOST=$(echo "${HOST_JOBS}" | awk '{print $1}')
-    if [ -z "${FIRST_JOB_FOR_HOST}" ]; then
-        continue # No jobs for this host, skip.
-    fi
+    # --- Host-level SSH Port Pre-check (only for remote hosts) ---
+    if [ "${HOST}" != "localhost" ]; then
+        # We only need to check connectivity once per host.
+        FIRST_JOB_FOR_HOST=$(echo "${HOST_JOBS}" | awk '{print $1}')
+        if [ -z "${FIRST_JOB_FOR_HOST}" ]; then
+            continue # No jobs for this host, skip.
+        fi
 
-    # Get connection details from the first job
-    first_job_src_var="${FIRST_JOB_FOR_HOST}_SRC"
-    first_job_src_val="${!first_job_src_var}"
-    REST_CHK=$(echo "${first_job_src_val}" | cut -d':' -f2-)
-    FIRST_PART_CHK=$(echo "${REST_CHK}" | cut -d':' -f1)
-    if echo "${FIRST_PART_CHK}" | grep -Eq '^[0-9]+$'; then
-        PORT_CHK="${FIRST_PART_CHK}"
-    else
-        PORT_CHK="22" # Default SSH port
-    fi
+        # Get connection details from the first job
+        first_job_src_var="${FIRST_JOB_FOR_HOST}_SRC"
+        first_job_src_val="${!first_job_src_var}"
+        REST_CHK=$(echo "${first_job_src_val}" | cut -d':' -f2-)
+        FIRST_PART_CHK=$(echo "${REST_CHK}" | cut -d':' -f1)
+        if echo "${FIRST_PART_CHK}" | grep -Eq '^[0-9]+$'; then
+            PORT_CHK="${FIRST_PART_CHK}"
+        else
+            PORT_CHK="22" # Default SSH port
+        fi
 
-    log_message "Checking SSH connectivity to ${HOST} on port ${PORT_CHK}..."
-    nc_output=$(nc -zvw1 "${HOST}" "${PORT_CHK}" 2>&1)
-    if [ $? -ne 0 ]; then
-        log_message "ERROR: SSH port ${PORT_CHK} on ${HOST} is not open. Skipping all jobs for this host. Detail: ${nc_output}"
-        GLOBAL_PROCESS_STATUS="FAILURE"
-        continue # Skip to the next host
-    else
-        log_message "SSH connectivity to ${HOST} on port ${PORT_CHK} successful."
+        log_message "Checking SSH connectivity to ${HOST} on port ${PORT_CHK}..."
+        nc_output=$(nc -zvw1 "${HOST}" "${PORT_CHK}" 2>&1)
+        if [ $? -ne 0 ]; then
+            log_message "ERROR: SSH port ${PORT_CHK} on ${HOST} is not open. Skipping all jobs for this host. Detail: ${nc_output}"
+            GLOBAL_PROCESS_STATUS="FAILURE"
+            continue # Skip to the next host
+        else
+            log_message "SSH connectivity to ${HOST} on port ${PORT_CHK} successful."
+        fi
     fi
 
     PID_LIST=""
@@ -485,12 +523,6 @@ for HOST in ${UNIQUE_HOSTS}; do
             # Destination is the host's Live directory. --relative will create subdirs.
             RSYNC_DEST="${BACKUP_DEST}/${HOST}/Live/"
 
-
-            log_message "Starting backup for job '${job_name}': ${target}"
-
-            # Source path for rsync. No trailing slash.
-            RSYNC_SOURCE="${USER_HOST}:${REMOTE_SOURCE}"
-
             # TARGET_DEST must point to the final location of the content for other logic (like archiving).
             # It's the base destination + the full remote source path.
             TARGET_DEST="${RSYNC_DEST}${REMOTE_SOURCE}"
@@ -502,18 +534,34 @@ for HOST in ${UNIQUE_HOSTS}; do
             echo "${target}" > "${JOB_DIR}/${job_name}.target_string"
             echo "${TARGET_DEST}" > "${JOB_DIR}/${job_name}.target_dest"
 
-            SSH_OPTIONS=""
-            [ -n "$SSH_KEY_PATH" ] && SSH_OPTIONS="-i ${SSH_KEY_PATH}"
-            [ -n "$PORT" ] && SSH_OPTIONS="${SSH_OPTIONS} -p ${PORT}"
 
+            log_message "Starting backup for job '${job_name}': ${target}"
+
+            # --- Build Rsync Command based on Host Type (Local vs Remote) ---
             RSYNC_OPTS_ARRAY=()
-            if [ "${LOG_VERBOSE}" = "yes" ]; then
-                # Use -v and --progress for detailed, real-time logging
-                RSYNC_OPTS_ARRAY+=("-avzhR" "--progress")
+            if [ "${HOST}" = "localhost" ]; then
+                # --- LOCALHOST BACKUP ---
+                # Source is a direct path, no SSH needed.
+                RSYNC_SOURCE="${REMOTE_SOURCE}"
+                log_message "INFO: Job '${job_name}' is a local backup. SSH will not be used."
+
+                # Basic rsync options for local transfer
+                if [ "${LOG_VERBOSE}" = "yes" ]; then RSYNC_OPTS_ARRAY+=("-avhR" "--progress"); else RSYNC_OPTS_ARRAY+=("-aR"); fi
+
             else
-                # Quieter operation
-                RSYNC_OPTS_ARRAY+=("-azhR")
+                # --- REMOTE HOST BACKUP ---
+                # Source is remote, SSH is required.
+                RSYNC_SOURCE="${USER_HOST}:${REMOTE_SOURCE}"
+                SSH_OPTIONS=""
+                [ -n "$SSH_KEY_PATH" ] && SSH_OPTIONS="-i ${SSH_KEY_PATH}"
+                [ -n "$PORT" ] && SSH_OPTIONS="${SSH_OPTIONS} -p ${PORT}"
+                RSYNC_OPTS_ARRAY+=("-e" "ssh ${SSH_OPTIONS}")
+
+                # Rsync options for remote transfer
+                if [ "${LOG_VERBOSE}" = "yes" ]; then RSYNC_OPTS_ARRAY+=("-avzhR" "--progress"); else RSYNC_OPTS_ARRAY+=("-azhR"); fi
             fi
+
+            # --- Common Rsync Options (for both local and remote) ---
             RSYNC_OPTS_ARRAY+=("--delete" "--stats" "--itemize-changes" ${RSYNC_EXTRA_OPTS})
 
             # Add excludes from config file
@@ -530,14 +578,13 @@ for HOST in ${UNIQUE_HOSTS}; do
             done
             
             # --- Execute Rsync ---
-            # The SSH port pre-check has been moved to the host-level loop.
             log_message "Executing rsync for job '${job_name}': ${RSYNC_SOURCE} -> ${RSYNC_DEST}"
             if [ "${LOG_PER_HOST}" = "yes" ] && [ -n "${CURRENT_HOST_LOG_FILE}" ]; then
                 # Pipe to tee to get real-time output in the host log, and also save to the temp file for email parsing
-                stdbuf -oL rsync "${RSYNC_OPTS_ARRAY[@]}" -e "ssh ${SSH_OPTIONS}" "${RSYNC_SOURCE}" "${RSYNC_DEST}" 2>&1 | tee -a "${CURRENT_HOST_LOG_FILE}" > "${RSYNC_OUTPUT_FILE}"
+                stdbuf -oL rsync "${RSYNC_OPTS_ARRAY[@]}" "${RSYNC_SOURCE}" "${RSYNC_DEST}" 2>&1 | tee -a "${CURRENT_HOST_LOG_FILE}" > "${RSYNC_OUTPUT_FILE}"
             else
                 # Original behavior if per-host logging is off
-                rsync "${RSYNC_OPTS_ARRAY[@]}" -e "ssh ${SSH_OPTIONS}" "${RSYNC_SOURCE}" "${RSYNC_DEST}" > "${RSYNC_OUTPUT_FILE}" 2>&1
+                rsync "${RSYNC_OPTS_ARRAY[@]}" "${RSYNC_SOURCE}" "${RSYNC_DEST}" > "${RSYNC_OUTPUT_FILE}" 2>&1
             fi
             RSYNC_EXIT_CODE=$?
             log_message "Rsync for job '${job_name}' finished with exit code ${RSYNC_EXIT_CODE}."
@@ -753,7 +800,7 @@ for HOST in ${UNIQUE_HOSTS}; do
 
     log_message "Constructing and sending email report for host ${HOST}..."
     FROM_EMAIL="backup-reporter@$(hostname)"
-    EMAIL_SUBJECT="[Backup Finished] Report for ${HOST} - From $(hostname) - Status: ${HOST_OVERALL_STATUS}"
+    EMAIL_SUBJECT="[Backup ${BACKUP_NAME} Finished] Report for ${HOST} - From $(hostname) - Status: ${HOST_OVERALL_STATUS}"
 
     # DEBUG: Print HOST_REPORT_BODY to a file
     echo "${HOST_REPORT_BODY}" > "${JOB_DIR}/debug_host_report_body_${HOST}.txt"
