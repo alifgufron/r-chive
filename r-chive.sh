@@ -614,6 +614,24 @@ for HOST in ${UNIQUE_HOSTS}; do
         RSYNC_EXIT_CODE=$(cat "${JOB_DIR}/${job_name}.exitcode")
         # For the email report, read the output and strip out the progress lines (which contain carriage returns)
         RSYNC_STATS=$(sed '/\r/d' "${JOB_DIR}/${job_name}.output")
+
+        # Get and format the exclusion list for the report
+        excludes_var_name="${job_name}_EXCLUDES"
+        excludes_list="${!excludes_var_name}"
+        FORMATTED_EXCLUDES_BODY=""
+        if [ -n "${excludes_list}" ]; then
+            temp_excludes_list=""
+            while IFS= read -r pattern; do
+                pattern=$(echo "$pattern" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                if [ -n "$pattern" ] && ! echo "$pattern" | grep -q '^[[:space:]]*#'; then
+                    temp_excludes_list="${temp_excludes_list}  - ${pattern}\n"
+                fi
+            done <<< "${excludes_list}"
+            if [ -n "${temp_excludes_list}" ]; then
+                FORMATTED_EXCLUDES_BODY="Exclusions:\n${temp_excludes_list}"
+            fi
+        fi
+
         
         # The full rsync output is now streamed directly to the per-host log in real-time via tee.
         # This block is no longer needed and has been removed to prevent duplicate logging.
@@ -656,6 +674,9 @@ for HOST in ${UNIQUE_HOSTS}; do
             log_message "SUCCESS: Backup for job '${job_name}'."
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_SUCCESS} Job: ${job_name} (${target_string})\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
+            if [ -n "${FORMATTED_EXCLUDES_BODY}" ]; then
+                HOST_REPORT_BODY="${HOST_REPORT_BODY}${FORMATTED_EXCLUDES_BODY}"
+            fi
 
             if [ "${CREATE_ARCHIVE}" = "yes" ]; then
                 if [ "${DRY_RUN_MODE}" = "yes" ]; then
@@ -721,6 +742,9 @@ for HOST in ${UNIQUE_HOSTS}; do
             GLOBAL_PROCESS_STATUS="ERROR"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_FAIL} Job: ${job_name} (${target_string})\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: FAILED (Code: ${RSYNC_EXIT_CODE})\n"
+            if [ -n "${FORMATTED_EXCLUDES_BODY}" ]; then
+                HOST_REPORT_BODY="${HOST_REPORT_BODY}${FORMATTED_EXCLUDES_BODY}"
+            fi
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Error Detail:\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${SHORT_ERROR_MESSAGE}\n"
         fi
