@@ -632,6 +632,45 @@ for HOST in ${UNIQUE_HOSTS}; do
             fi
         fi
 
+        # Get the total size of the destination directory
+        JOB_SIZE_BODY=""
+        if [ -d "${TARGET_DEST}" ]; then
+            JOB_SIZE=$(du -sh "${TARGET_DEST}" | cut -f1)
+            JOB_SIZE_BODY="Size: ${JOB_SIZE}\n"
+        fi
+
+        # Get the 5 newest files in the destination directory
+        LATEST_FILES_BODY=""
+        if [ -d "${TARGET_DEST}" ]; then
+            LATEST_FILES=$(find "${TARGET_DEST}/" -type f -exec stat -f '%m %z %Su %Sg %N' {} + | sort -nr | head -n 5 | awk -v target_dir="${TARGET_DEST}/" '
+                function format_bytes(bytes) {
+                    if (bytes < 1024) return bytes "B";
+                    if (bytes < 1024*1024) return sprintf("%.1fK", bytes/1024);
+                    if (bytes < 1024*1024*1024) return sprintf("%.1fM", bytes/(1024*1024));
+                    return sprintf("%.1fG", bytes/(1024*1024*1024));
+                }
+                {
+                    mod_time = $1;
+                    size = $2;
+                    owner = $3;
+                    group = $4;
+                    $1=$2=$3=$4=""; # Clear the first four fields
+                    path = substr($0, 5); # The rest is the path
+                    
+                    # Make path relative
+                    sub(target_dir, "", path);
+
+                    formatted_size = format_bytes(size);
+                    formatted_time = strftime("%b %d %H:%M", mod_time);
+
+                    printf "  %-8s %-8s %-8s %-12s %s\n", formatted_size, owner, group, formatted_time, path;
+                }')
+
+            if [ -n "${LATEST_FILES}" ]; then
+                LATEST_FILES_BODY="Latest Files:\n${LATEST_FILES}\n"
+            fi
+        fi
+
         
         # The full rsync output is now streamed directly to the per-host log in real-time via tee.
         # This block is no longer needed and has been removed to prevent duplicate logging.
@@ -673,11 +712,17 @@ for HOST in ${UNIQUE_HOSTS}; do
         if [ ${RSYNC_EXIT_CODE} -eq 0 ]; then
             log_message "SUCCESS: Backup for job '${job_name}'."
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_SUCCESS} Job: ${job_name} (${target_string})\n"
-            HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
-            if [ -n "${FORMATTED_EXCLUDES_BODY}" ]; then
-                HOST_REPORT_BODY="${HOST_REPORT_BODY}${FORMATTED_EXCLUDES_BODY}"
-            fi
-
+                            HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
+                            if [ -n "${FORMATTED_EXCLUDES_BODY}" ]; then
+                                HOST_REPORT_BODY="${HOST_REPORT_BODY}${FORMATTED_EXCLUDES_BODY}"
+                            fi
+            
+                            if [ -n "${JOB_SIZE_BODY}" ]; then
+                                HOST_REPORT_BODY="${HOST_REPORT_BODY}${JOB_SIZE_BODY}"
+                            fi
+                            if [ -n "${LATEST_FILES_BODY}" ]; then
+                                HOST_REPORT_BODY="${HOST_REPORT_BODY}${LATEST_FILES_BODY}"
+                            fi
             if [ "${CREATE_ARCHIVE}" = "yes" ]; then
                 if [ "${DRY_RUN_MODE}" = "yes" ]; then
                     log_message "WARNING: Archive creation SKIPPED for job '${job_name}' (Dry Run Mode) ---"
@@ -744,6 +789,12 @@ for HOST in ${UNIQUE_HOSTS}; do
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: FAILED (Code: ${RSYNC_EXIT_CODE})\n"
             if [ -n "${FORMATTED_EXCLUDES_BODY}" ]; then
                 HOST_REPORT_BODY="${HOST_REPORT_BODY}${FORMATTED_EXCLUDES_BODY}"
+            fi
+            if [ -n "${JOB_SIZE_BODY}" ]; then
+                HOST_REPORT_BODY="${HOST_REPORT_BODY}${JOB_SIZE_BODY}"
+            fi
+            if [ -n "${LATEST_FILES_BODY}" ]; then
+                HOST_REPORT_BODY="${HOST_REPORT_BODY}${LATEST_FILES_BODY}"
             fi
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Error Detail:\n"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${SHORT_ERROR_MESSAGE}\n"
