@@ -437,6 +437,24 @@ if [ "${CONFIG_IS_VALID}" = "no" ]; then
 fi
 UNIQUE_HOSTS=$(echo "${UNIQUE_HOSTS}" | tr ' ' '\n' | sort -u)
 
+# --- Validate DU_COMMAND and set the command to be used ---
+DU_COMMAND=${DU_COMMAND:-"du"} # Default to 'du' if not set in config
+VALIDATED_DU_COMMAND="du"     # The actual command we will run, default to safe 'du'
+
+if [ "${DU_COMMAND}" = "du" ]; then
+    VALIDATED_DU_COMMAND="du"
+elif [ "${DU_COMMAND}" = "gdu" ]; then
+    if command -v "${DU_COMMAND}" &> /dev/null; then
+        VALIDATED_DU_COMMAND="${DU_COMMAND}"
+        log_message "INFO: Using '${DU_COMMAND}' for disk usage calculation as configured."
+    else
+        log_message "WARNING: '${DU_COMMAND}' is configured but not found in PATH. Falling back to standard 'du'."
+    fi
+else
+    log_message "WARNING: Invalid DU_COMMAND '${DU_COMMAND}' specified in config. Falling back to standard 'du'."
+fi
+
+
 # --- Execute Configuration Check if Requested ---
 if [ "${CHECK_CONF_MODE}" = "yes" ]; then
     run_configuration_check
@@ -632,11 +650,26 @@ for HOST in ${UNIQUE_HOSTS}; do
             fi
         fi
 
-        # Get the total size of the destination directory
+        # Get the total size of the destination directory, if enabled
         JOB_SIZE_BODY=""
-        if [ -d "${TARGET_DEST}" ]; then
-            JOB_SIZE=$(du -sh "${TARGET_DEST}" | cut -f1)
-            JOB_SIZE_BODY="Size: ${JOB_SIZE}\n"
+        if [ "${REPORT_SHOW_JOB_SIZE}" = "yes" ]; then
+            if [ -d "${TARGET_DEST}" ]; then
+                JOB_SIZE=""
+                case "${VALIDATED_DU_COMMAND}" in
+                    du)
+                        # Standard du, -h is for human-readable
+                        JOB_SIZE=$(${VALIDATED_DU_COMMAND} -sh "${TARGET_DEST}" 2>/dev/null | cut -f1)
+                        ;;
+                    gdu)
+                        # gdu: -h is for help, so we must not use it. Human-readable is default.
+                        # -s for summarize, -x to not cross filesystems.
+                        JOB_SIZE=$(${VALIDATED_DU_COMMAND} -sx "${TARGET_DEST}" 2>/dev/null | awk '{print $1 $2}')
+                        ;;
+                esac
+                if [ -n "${JOB_SIZE}" ]; then
+                    JOB_SIZE_BODY="Size: ${JOB_SIZE}\n"
+                fi
+            fi
         fi
 
         # Get the 5 newest files in the destination directory

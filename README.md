@@ -24,6 +24,8 @@ It performs a "mirror" backup for each specified host. Thanks to `rsync`'s `--re
     - **Live Console Logging**: When run in an interactive terminal, all log output is streamed to the console in real-time with color-coding for readability (Errors in red, success in green, etc.).
     - **Monitor Mode** (`LOG_VERBOSE=yes`): View real-time transfer progress in the per-host log, perfect for `tail -f`.
 - **Flexible Email Reports**: Choose between a concise summary report or a summary with a detailed log file as an attachment. The attached log is always clean, even in monitor mode.
+- **Flexible Disk Usage Reporting**: Optionally include the total size of each backup job in the email report. This can be disabled for performance on very large filesystems.
+- **Selectable `du` Tool**: Choose between the standard `du` command or a faster alternative like `gdu` for disk usage calculation.
 - **Start Notification Emails**: Sends an email notification when a backup process for a host begins, providing immediate confirmation that the job has started.
 - **Improved Error Reporting**: Robustly captures and logs the specific `stderr` output from critical commands (`rsync`, `tar`, `cp`), ensuring no error goes unnoticed. Failed jobs include an actionable error message in the global log and email body.
 - **Parallel Backups**: Executes backups for all jobs on a single host concurrently, significantly reducing total backup time.
@@ -36,7 +38,7 @@ It performs a "mirror" backup for each specified host. Thanks to `rsync`'s `--re
 
 ## 3. Prerequisites
 
-- **On the Backup Server**: `rsync`, `zstd`, `nc` (netcat), a configured MTA (like `sendmail`), and an SSH client.
+- **On the Backup Server**: `rsync`, `zstd`, `nc` (netcat), a configured MTA (like `sendmail`), and an SSH client. **Optional**: `gdu` for faster disk usage calculation.
 - **On ALL Remote Servers**: `rsync` must be installed.
 
 ## 4. Configuration
@@ -73,7 +75,9 @@ The script accepts the following command-line arguments:
 | `REPORT_EMAIL`                | The destination email address for backup reports.                                                                                                                                                                                                                                                   |
 | `REPORT_EMAIL_VERBOSE`        | Set to `"no"` for a short summary email. Set to `"yes"` to include a detailed log file as an attachment in the email.                                                                                                                                                                                   |
 | `SEND_START_NOTIFICATION`     | Set to `"yes"` to send a notification email when a backup for a host begins.                                                                                                                                                                                                                             |
-| `MAX_ATTACHMENT_SIZE_MB`      | The maximum size (in MB) for an email attachment. If a detailed log file exceeds this, it won't be attached, and a warning will be added to the email body. Set to `0` to disable.                                                                                                                            |
+| `REPORT_SHOW_JOB_SIZE`        | Set to `"yes"` to show the total size of each backup job's destination directory in the report. Defaults to `"yes"`. Can be disabled if slow.                                                                                                                                                                 |
+| `DU_COMMAND`                  | (Optional) Specify the command to calculate disk usage: `"du"` (default) or `"gdu"`. If `gdu` is selected, it must be installed, and the script will fall back to `du` if it is not found.                                                                                             |
+| `MAX_ATTACHMENT_SIZE_MB`      | The maximum size (in MB) for an email attachment. If a detailed log file exceeds this, it won't be attached, and a warning will be added to the email body. Set to `0` to disable.
 | `LOG_DIR`                     | The directory where log files will be stored.                                                                                                                                                                                                                                                             |
 | `LOG_PER_HOST`                | Set to `"yes"` to create detailed, date-stamped log files inside a per-host subdirectory (e.g., `LOG_DIR/HOST/DATE.log`). Highly recommended.                                                                                                                                                              |
 | `LOG_VERBOSE`                 | Set to `"yes"` to enable **Monitor Mode**. This adds `--progress` to `rsync`, showing real-time file transfer progress in the per-host log. Useful for monitoring large backups with `tail -f`. This does not affect the content of the email report.                                                  |

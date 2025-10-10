@@ -80,6 +80,16 @@ REPORT_EMAIL_VERBOSE="no"
 # This provides an immediate confirmation that the process has begun.
 SEND_START_NOTIFICATION="no"
 
+# Set to "yes" to show the total size of each backup job's destination directory in the report.
+# This uses `du -sh` and can be slow on very large directories.
+REPORT_SHOW_JOB_SIZE="yes"
+
+# [OPTIONAL] Specify the command to calculate disk usage.
+# Options: "du" (standard, most compatible), "gdu" (a faster alternative on some systems).
+# If you choose "gdu", you must ensure it is installed on your system.
+# The script will fall back to "du" if the selected command is not found.
+DU_COMMAND="du"
+
 # The maximum size (in MB) for an email attachment. If a detailed log file exceeds this, it won't be attached. Set to 0 to disable the limit.
 MAX_ATTACHMENT_SIZE_MB="0"
 
