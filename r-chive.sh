@@ -564,7 +564,7 @@ for HOST in ${UNIQUE_HOSTS}; do
                 log_message "INFO: Job '${job_name}' is a local backup. SSH will not be used."
 
                 # Basic rsync options for local transfer
-                if [ "${LOG_VERBOSE}" = "yes" ]; then RSYNC_OPTS_ARRAY+=("-avhR" "--progress"); else RSYNC_OPTS_ARRAY+=("-aR"); fi
+                if [ "${LOG_VERBOSE}" = "yes" ]; then RSYNC_OPTS_ARRAY+=("-aHAXxvR" "--progress"); else RSYNC_OPTS_ARRAY+=("-aHAXxvR"); fi
 
             else
                 # --- REMOTE HOST BACKUP ---
@@ -576,7 +576,7 @@ for HOST in ${UNIQUE_HOSTS}; do
                 RSYNC_OPTS_ARRAY+=("-e" "ssh ${SSH_OPTIONS}")
 
                 # Rsync options for remote transfer
-                if [ "${LOG_VERBOSE}" = "yes" ]; then RSYNC_OPTS_ARRAY+=("-avzhR" "--progress"); else RSYNC_OPTS_ARRAY+=("-azhR"); fi
+                if [ "${LOG_VERBOSE}" = "yes" ]; then RSYNC_OPTS_ARRAY+=("-aHAXxvzhR" "--progress"); else RSYNC_OPTS_ARRAY+=("-aHAXxvzhR"); fi
             fi
 
             # --- Common Rsync Options (for both local and remote) ---
