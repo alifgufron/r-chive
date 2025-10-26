@@ -1,4 +1,4 @@
-#!/usr/local/bin/bash
+#!/usr/bin/env bash
 
 # MIT License
 #
@@ -580,7 +580,7 @@ for HOST in ${UNIQUE_HOSTS}; do
             fi
 
             # --- Common Rsync Options (for both local and remote) ---
-            RSYNC_OPTS_ARRAY+=("--delete" "--stats" "--itemize-changes" ${RSYNC_EXTRA_OPTS})
+            RSYNC_OPTS_ARRAY+=("--delete" "--delete-excluded" "--numeric-ids" "--partial" "--inplace" "--stats" "--itemize-changes" ${RSYNC_EXTRA_OPTS})
 
             # Add excludes from config file
             while IFS= read -r pattern; do

@@ -12,7 +12,7 @@ It performs a "mirror" backup for each specified host. Thanks to `rsync`'s `--re
 
 - **Job-Based Configuration**: A clean, powerful system where you define backup jobs and control them from a master list.
 - **Strict Job Name Validation**: Job names are validated to ensure they only contain letters, numbers, and underscores, preventing common configuration errors.
-- **Comprehensive Rsync Options**: Utilizes `rsync -aHAXxv` (archive mode, preserve hardlinks, ACLs, extended attributes, one-filesystem, verbose) for robust and complete system backups, ensuring full fidelity for restore operations.
+- **Comprehensive Rsync Options**: Utilizes a robust set of rsync flags (`-aHAXxv --numeric-ids --delete --delete-excluded --partial --inplace`) to ensure backups are a true 1:1 mirror. This preserves all critical metadata (hardlinks, ACLs, extended attributes), uses numeric IDs to prevent user/group mismatches, deletes extraneous files at the destination (including newly excluded ones), and supports resuming interrupted transfers.
 - **Path-Preserving Backups**: Uses `rsync`'s relative path feature to automatically replicate the source directory structure at the destination.
 - **Per-Job Exclusions**: Easily specify a list of files and directories to exclude for each backup job individually via the config file.
 - **Global Excludes**: A command-line `--exclude` parameter allows you to add temporary, global exclusion patterns for a single run.
