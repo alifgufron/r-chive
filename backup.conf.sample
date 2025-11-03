@@ -51,9 +51,22 @@ fileserver_docs_EXCLUDES="
   /private_notes/
 "
 
-# ==============================================================================
+# ------------------------------------------------------------------------------
+# ADVANCED & CUSTOM OPTIONS
+# ------------------------------------------------------------------------------
+
+# [OPTIONAL] Add any extra rsync command-line options here.
+# These options will be appended to every rsync command executed by this script.
+# This is useful for advanced tuning, such as overriding default behavior
+# or adding specific flags for your environment.
+# Example: "--no-acls --no-xattrs" to disable ACLs and Extended Attributes.
+# Example: "--bwlimit=2000" to limit bandwidth to 2000 KB/s.
+RSYNC_CUSTOM_OPTS=""
+
+
+# ------------------------------------------------------------------------------
 # DESTINATION & SSH
-# ==============================================================================
+# ------------------------------------------------------------------------------
 
 # The top-level directory on this server where all backups will be stored.
 # The script will create host-named subdirectories inside this location.
