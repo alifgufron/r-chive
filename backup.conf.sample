@@ -43,6 +43,21 @@ web_server_www_EXCLUDES="
 db_server_dumps_SRC="backup_user@db-server-01.example.com:2222:/var/local/mysql_dumps"
 db_server_dumps_EXCLUDES=""
 
+# --- Job 3: Backup system /etc directory (example with exclusions) ---
+# This demonstrates backing up system files while excluding sensitive data.
+# Note: RSYNC_CUSTOM_OPTS above is set to skip xattrs/acls to avoid permission errors.
+# system_etc_SRC="backup_user@server-01.example.com:/etc"
+# system_etc_EXCLUDES="
+#   # Sensitive files that require root access
+#   master.passwd
+#   spwd.db
+#   pwd.db
+#   ssh/*_key*
+#   ssl/private/*
+#   *.key
+#   *.pem
+# "
+
 
 # --- Example of a disabled job ---
 # The definitions below are ignored because "fileserver_docs" is not in BACKUP_JOBS.
@@ -59,9 +74,15 @@ fileserver_docs_EXCLUDES="
 # These options will be appended to every rsync command executed by this script.
 # This is useful for advanced tuning, such as overriding default behavior
 # or adding specific flags for your environment.
-# Example: "--no-acls --no-xattrs" to disable ACLs and Extended Attributes.
-# Example: "--bwlimit=2000" to limit bandwidth to 2000 KB/s.
-RSYNC_CUSTOM_OPTS=""
+#
+# Common use cases:
+#   --no-xattrs --no-acls    : Skip extended attributes and ACLs (avoids permission errors)
+#   --bwlimit=2000           : Limit bandwidth to 2000 KB/s
+#   --compress               : Compress data during transfer
+#
+# Example: To avoid "Permission denied" errors when backing up /etc or other
+# system directories, use:
+RSYNC_CUSTOM_OPTS="--no-xattrs --no-acls"
 
 
 # ------------------------------------------------------------------------------

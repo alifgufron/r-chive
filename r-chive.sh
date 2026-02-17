@@ -184,7 +184,6 @@ log_message() {
 
 send_host_start_notification_email() {
     local host="$1"
-    # The second argument is the list of jobs, passed as a single string
     local host_jobs_list="$2"
 
     # Check if email reporting is enabled at all or if this feature is turned off
@@ -193,7 +192,12 @@ send_host_start_notification_email() {
     fi
 
     local from_email="backup-reporter@$(hostname)"
-    local email_subject="${ICON_START} [Backup ${BACKUP_NAME} Started] For Host: ${host} - From $(hostname)"
+    local email_subject_raw="${ICON_START} [Backup ${BACKUP_NAME} Started] For Host: ${host} - From $(hostname)"
+    
+    # Encode subject using MIME encoded-word syntax (UTF-8 + Base64)
+    # Using base64 -w 0 to prevent line wrapping which breaks email subject display
+    local email_subject_encoded=$(printf "=?UTF-8?B?%s?=" "$(printf '%s' "${email_subject_raw}" | base64 -w 0)")
+    
     local job_details_body=""
 
     # Loop through the job names to build the details
@@ -218,9 +222,10 @@ send_host_start_notification_email() {
     (
         echo "From: ${from_email}";
         echo "To: ${REPORT_EMAIL}";
-        echo "Subject: ${email_subject}";
+        echo "Subject: ${email_subject_encoded}";
         echo "MIME-Version: 1.0";
         echo "Content-Type: text/plain; charset=UTF-8";
+        echo "Content-Transfer-Encoding: 8bit";
         echo "";
         echo -e "${email_body}";
     ) | /usr/sbin/sendmail -t
@@ -742,10 +747,73 @@ for HOST in ${UNIQUE_HOSTS}; do
 
         HOST_REPORT_BODY="${HOST_REPORT_BODY}--------------------------------------------------\n"
 
-        if [ ${RSYNC_EXIT_CODE} -eq 0 ]; then
+        # --- Scan Rsync Output for Error Patterns ---
+        # Even if exit code is 0, rsync may have encountered errors
+        RSYNC_OUTPUT_CONTENT=$(cat "${JOB_DIR}/${job_name}.output")
+        ERROR_PATTERN_DETECTED="no"
+        DETECTED_ERRORS=""
+
+        # Check for common error patterns in rsync output
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "permission denied"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - Permission denied encountered\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "failed:"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - Operation failed\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "IO error"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - IO error encountered\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "rsync error:"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - Rsync error reported\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "opendir.*failed"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - Directory access failed\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "skipping file deletion"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - File deletion skipped due to errors\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "some files/attrs were not transferred"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - Some files/attributes were not transferred\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "unexpected server error"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - Unexpected server error\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "connection reset by peer"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - Connection reset by peer\n"
+        fi
+
+        if echo "${RSYNC_OUTPUT_CONTENT}" | grep -qi "broken pipe"; then
+            ERROR_PATTERN_DETECTED="yes"
+            DETECTED_ERRORS="${DETECTED_ERRORS}  - Broken pipe\n"
+        fi
+
+        # Determine final job status based on exit code AND error patterns
+        JOB_STATUS="SUCCESS"
+        if [ ${RSYNC_EXIT_CODE} -ne 0 ] || [ "${ERROR_PATTERN_DETECTED}" = "yes" ]; then
+            JOB_STATUS="FAILED"
+        fi
+
+        if [ "${JOB_STATUS}" = "SUCCESS" ]; then
             log_message "SUCCESS: Backup for job '${job_name}'."
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_SUCCESS} Job: ${job_name} (${target_string})\n"
-                            HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}Status: SUCCESS\n"
                             if [ -n "${FORMATTED_EXCLUDES_BODY}" ]; then
                                 HOST_REPORT_BODY="${HOST_REPORT_BODY}${FORMATTED_EXCLUDES_BODY}"
                             fi
@@ -811,11 +879,22 @@ for HOST in ${UNIQUE_HOSTS}; do
                     SHORT_ERROR_MESSAGE="No specific error message found in rsync output."
                 fi
             fi
-            echo "DEBUG: SHORT_ERROR_MESSAGE after initial extraction: [${SHORT_ERROR_MESSAGE}]" >> "${JOB_DIR}/debug_host_report_body_${HOST}.txt"
-            
+
             # Ensure SHORT_ERROR_MESSAGE is a single, trimmed line for email display
             SHORT_ERROR_MESSAGE=$(echo "${SHORT_ERROR_MESSAGE}" | tr -d '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-            log_message "ERROR: Backup for job '${job_name}' FAILED with exit code ${RSYNC_EXIT_CODE}. Detail: ${SHORT_ERROR_MESSAGE}"
+
+            # Build comprehensive error detail
+            ERROR_DETAIL=""
+            if [ "${ERROR_PATTERN_DETECTED}" = "yes" ]; then
+                ERROR_DETAIL="Detected Issues:\n${DETECTED_ERRORS}\n"
+                if [ -n "${SHORT_ERROR_MESSAGE}" ] && [ "${SHORT_ERROR_MESSAGE}" != "No specific error message found in rsync output." ]; then
+                    ERROR_DETAIL="${ERROR_DETAIL}Additional Info: ${SHORT_ERROR_MESSAGE}\n"
+                fi
+            else
+                ERROR_DETAIL="${SHORT_ERROR_MESSAGE}\n"
+            fi
+
+            log_message "ERROR: Backup for job '${job_name}' FAILED. Exit Code: ${RSYNC_EXIT_CODE}. Detail: ${SHORT_ERROR_MESSAGE}"
             HOST_OVERALL_STATUS="ERROR"
             GLOBAL_PROCESS_STATUS="ERROR"
             HOST_REPORT_BODY="${HOST_REPORT_BODY}${ICON_FAIL} Job: ${job_name} (${target_string})\n"
@@ -830,7 +909,7 @@ for HOST in ${UNIQUE_HOSTS}; do
                 HOST_REPORT_BODY="${HOST_REPORT_BODY}${LATEST_FILES_BODY}"
             fi
             HOST_REPORT_BODY="${HOST_REPORT_BODY}Error Detail:\n"
-            HOST_REPORT_BODY="${HOST_REPORT_BODY}${SHORT_ERROR_MESSAGE}\n"
+            HOST_REPORT_BODY="${HOST_REPORT_BODY}${ERROR_DETAIL}"
         fi
 
         HOST_PROCESSED_TARGETS_LIST="${HOST_PROCESSED_TARGETS_LIST}  ${ICON_TARGET} ${job_name} (${target_string})\n"
@@ -908,7 +987,17 @@ for HOST in ${UNIQUE_HOSTS}; do
 
     log_message "Constructing and sending email report for host ${HOST}..."
     FROM_EMAIL="backup-reporter@$(hostname)"
-    EMAIL_SUBJECT="[Backup ${BACKUP_NAME} Finished] Report for ${HOST} - From $(hostname) - Status: ${HOST_OVERALL_STATUS}"
+    
+    # Add status icon at the beginning of email subject for quick visual identification
+    SUBJECT_STATUS_ICON="${ICON_SUCCESS}"
+    if [ "${HOST_OVERALL_STATUS}" = "ERROR" ]; then
+        SUBJECT_STATUS_ICON="${ICON_FAIL}"
+    fi
+    EMAIL_SUBJECT_RAW="${SUBJECT_STATUS_ICON} [Backup ${BACKUP_NAME} Finished] Report for ${HOST} - From $(hostname) - Status: ${HOST_OVERALL_STATUS}"
+    
+    # Encode subject using MIME encoded-word syntax (UTF-8 + Base64) to ensure emojis render correctly
+    # Using base64 -w 0 to prevent line wrapping which breaks email subject display
+    EMAIL_SUBJECT_ENCODED=$(printf "=?UTF-8?B?%s?=" "$(printf '%s' "${EMAIL_SUBJECT_RAW}" | base64 -w 0)")
 
     # DEBUG: Print HOST_REPORT_BODY to a file
     echo "${HOST_REPORT_BODY}" > "${JOB_DIR}/debug_host_report_body_${HOST}.txt"
@@ -949,20 +1038,23 @@ for HOST in ${UNIQUE_HOSTS}; do
         (
             echo "From: ${FROM_EMAIL}";
             echo "To: ${REPORT_EMAIL}";
-            echo "Subject: ${EMAIL_SUBJECT}";
+            echo "Subject: ${EMAIL_SUBJECT_ENCODED}";
             echo "MIME-Version: 1.0";
-            echo "Content-Type: multipart/mixed; boundary=\"${BOUNDARY}\""
+            echo "Content-Type: multipart/mixed; boundary=\"${BOUNDARY}\"";
+            echo "Content-Transfer-Encoding: 8bit";
             echo "";
             echo "--${BOUNDARY}";
             echo "Content-Type: text/plain; charset=UTF-8";
+            echo "Content-Transfer-Encoding: 8bit";
             echo "Content-Disposition: inline";
             echo "";
             echo -e "${REPORT_HEADER}${HOST_REPORT_BODY}";
             echo "";
             echo "--${BOUNDARY}";
             ATTACHMENT_FILENAME="backup-details-${HOST}-$(date +' %Y-%m-%d').log"
-            echo "Content-Type: text/plain; charset=UTF-8; name=\"${ATTACHMENT_FILENAME}\""
-            echo "Content-Disposition: attachment; filename=\"${ATTACHMENT_FILENAME}\""
+            echo "Content-Type: text/plain; charset=UTF-8; name=\"${ATTACHMENT_FILENAME}\"";
+            echo "Content-Transfer-Encoding: 8bit";
+            echo "Content-Disposition: attachment; filename=\"${ATTACHMENT_FILENAME}\"";
             echo "";
             cat "${ATTACHMENT_FILE}";
             echo "";
@@ -973,9 +1065,10 @@ for HOST in ${UNIQUE_HOSTS}; do
         (
             echo "From: ${FROM_EMAIL}";
             echo "To: ${REPORT_EMAIL}";
-            echo "Subject: ${EMAIL_SUBJECT}";
+            echo "Subject: ${EMAIL_SUBJECT_ENCODED}";
             echo "MIME-Version: 1.0";
             echo "Content-Type: text/plain; charset=UTF-8";
+            echo "Content-Transfer-Encoding: 8bit";
             echo "";
             echo -e "${REPORT_HEADER}${HOST_REPORT_BODY}";
         ) | /usr/sbin/sendmail -t

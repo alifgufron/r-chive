@@ -36,6 +36,79 @@ It performs a "mirror" backup for each specified host. Thanks to `rsync`'s `--re
 - **Configuration-Specific Locking**: A robust lock file mechanism prevents multiple instances using the same configuration from running simultaneously, while allowing parallel execution of different backup configurations.
 - **Dry Run Mode**: A `--dry-run` mode allows you to test your configuration safely.
 - **Robust Interrupt Handling**: Gracefully terminates all running jobs and performs a clean exit when interrupted (e.g., via `Ctrl+C`).
+- **Accurate Error Detection**: Automatically scans rsync output for error patterns (permission denied, IO errors, etc.) and reports accurate status even when rsync exit code is 0.
+- **Enhanced Email Reports**: Email subjects now include status icons (✅/❌) with UTF-8 encoding for proper display across all email clients.
+
+## 2.1. Troubleshooting: Permission Denied Errors
+
+If you're backing up system directories like `/etc` and encounter "Permission denied" errors on extended attributes or sensitive files, here are solutions:
+
+### **Solution 1: Skip Extended Attributes (Recommended)**
+
+Add this to your config file to skip extended attributes and ACLs that often cause permission errors:
+
+```bash
+RSYNC_CUSTOM_OPTS="--no-xattrs --no-acls"
+```
+
+### **Solution 2: Exclude Sensitive Files**
+
+Exclude files that require root access:
+
+```bash
+job_name_EXCLUDES="
+  # Sensitive files
+  master.passwd
+  spwd.db
+  pwd.db
+  ssh/*_key*
+  ssl/private/*
+  *.key
+  *.pem
+"
+```
+
+### **Solution 3: Use sudo on Remote Server (Advanced)**
+
+For complete backup without errors, configure passwordless sudo for rsync:
+
+**On Remote Server:**
+```bash
+# Edit sudoers
+visudo
+
+# Add this line (replace 'foo' with your backup user)
+foo ALL=(root) NOPASSWD: /usr/bin/rsync
+```
+
+**Create rsync wrapper on remote server:**
+```bash
+# Create /usr/local/bin/rsync-wrapper
+cat > /usr/local/bin/rsync-wrapper << 'EOF'
+#!/bin/sh
+exec sudo /usr/bin/rsync "$@"
+EOF
+chmod 755 /usr/local/bin/rsync-wrapper
+```
+
+Then configure your backup script to use the wrapper via SSH command override.
+
+### **Solution 4: Combined Approach (Best Practice)**
+
+Combine Solutions 1 & 2 for best results:
+
+```bash
+# Global options
+RSYNC_CUSTOM_OPTS="--no-xattrs --no-acls"
+
+# Per-job exclusions
+backup_etc_EXCLUDES="
+  master.passwd
+  spwd.db
+  ssh/*_key*
+  ssl/private/*
+"
+```
 
 ## 3. Prerequisites
 
@@ -78,7 +151,7 @@ The script accepts the following command-line arguments:
 | `SEND_START_NOTIFICATION`     | Set to `"yes"` to send a notification email when a backup for a host begins.                                                                                                                                                                                                                             |
 | `REPORT_SHOW_JOB_SIZE`        | Set to `"yes"` to show the total size of each backup job's destination directory in the report. Defaults to `"yes"`. Can be disabled if slow.                                                                                                                                                                 |
 | `DU_COMMAND`                  | (Optional) Specify the command to calculate disk usage: `"du"` (default) or `"gdu"`. If `gdu` is selected, it must be installed, and the script will fall back to `du` if it is not found.                                                                                             |
-| `RSYNC_CUSTOM_OPTS`           | (Optional) A string of extra `rsync` command-line options to be added to every job (e.g., `"--no-acls --bwlimit=1000"`). Useful for advanced tuning or overriding defaults.                                                                                                   |
+| `RSYNC_CUSTOM_OPTS`           | (Optional) A string of extra `rsync` command-line options to be added to every job (e.g., `"--no-acls --bwlimit=1000"`). Useful for advanced tuning or overriding defaults. **Tip**: Use `"--no-xattrs --no-acls"` to avoid permission errors when backing up system directories like `/etc`.                                                                                                   |
 | `MAX_ATTACHMENT_SIZE_MB`      | The maximum size (in MB) for an email attachment. If a detailed log file exceeds this, it won't be attached, and a warning will be added to the email body. Set to `0` to disable.
 | `LOG_DIR`                     | The directory where log files will be stored.                                                                                                                                                                                                                                                             |
 | `LOG_PER_HOST`                | Set to `"yes"` to create detailed, date-stamped log files inside a per-host subdirectory (e.g., `LOG_DIR/HOST/DATE.log`). Highly recommended.                                                                                                                                                              |
@@ -118,11 +191,13 @@ If you prefer a stable version, you can download a tagged release from the proje
 Copy `backup.conf.sample` to a permanent location (e.g., `/usr/local/etc/r-chive/main.conf`) and edit it. Define your jobs in `BACKUP_JOBS` and create the corresponding `_SRC` and `_EXCLUDES` variables.
 
 **Example `main.conf`:**
-```bash
-# Activate two jobs for two different servers
-BACKUP_JOBS="web_server_www app_server_logs"
 
-# Define job 1: Backup website files from web_server_01
+*Basic Configuration (Web Server + System Directory):*
+```bash
+# Activate jobs
+BACKUP_JOBS="web_server_www system_etc"
+
+# Job 1: Backup website files
 web_server_www_SRC="backup_user@web-server-01.example.com:/var/www/html"
 web_server_www_EXCLUDES="
   wp-content/cache/
@@ -130,14 +205,24 @@ web_server_www_EXCLUDES="
   tmp/
 "
 
-# Define job 2: Backup application logs from app_server_01 on a custom SSH port
-app_server_logs_SRC="backup_user@app-server-01.example.com:2222:/var/log/my_app"
-app_server_logs_EXCLUDES=""
+# Job 2: Backup /etc directory (system files)
+system_etc_SRC="backup_user@server-01.example.com:/etc"
+system_etc_EXCLUDES="
+  # Skip sensitive files that require root access
+  master.passwd
+  spwd.db
+  pwd.db
+  ssh/*_key*
+  ssl/private/*
+"
 
-# Define other global settings...
+# Global settings
 BACKUP_DEST="/mnt/backups"
 REPORT_EMAIL="admin@example.com"
 LOG_DIR="/var/log/r-chive"
+
+# Skip extended attributes to avoid permission errors
+RSYNC_CUSTOM_OPTS="--no-xattrs --no-acls"
 ```
 
 ### Step 3: Setup SSH Keys
@@ -181,3 +266,57 @@ The new logging system is designed to work with standard system tools.
     # Deletes host-specific logs older than 30 days
     find /var/log/r-chive -type f -name "*.log" -mtime +30 -delete
     ```
+
+## 7. Understanding Email Reports
+
+### Email Subject Format
+
+Email subjects now include status icons for quick visual identification:
+
+**Success:**
+```
+✅ [Backup Daily Finished] Report for server1 - From backup-host - Status: SUCCESS
+```
+
+**Error Detected:**
+```
+❌ [Backup Daily Finished] Report for server1 - From backup-host - Status: ERROR
+```
+
+**Start Notification:**
+```
+🚀 [Backup Daily Started] For Host: server1 - From backup-host
+```
+
+### Email Body Structure
+
+The email body includes:
+
+1. **Overall Status** - Shows ✅ SUCCESS or ❌ ERROR for the entire host backup
+2. **Job Details** - Each job shows its individual status
+3. **Error Details** - If a job fails, detected errors are listed:
+   ```
+   ❌ Job: backup_etc (user@host:/etc)
+   Status: FAILED (Code: 0)
+   Error Detail:
+   Detected Issues:
+     - Permission denied encountered
+     - IO error encountered
+     - Some files/attributes were not transferred
+   ```
+
+### Accurate Error Detection
+
+The script automatically scans rsync output for error patterns, even when rsync returns exit code 0. This ensures you're immediately notified of any issues without needing to check attachment logs.
+
+**Detected Error Patterns:**
+- Permission denied
+- Operation failed
+- IO error
+- Directory access failed (opendir failed)
+- Skipping file deletion
+- Some files/attributes were not transferred
+- Connection reset by peer
+- Broken pipe
+- Unexpected server error
+- Rsync error reported
