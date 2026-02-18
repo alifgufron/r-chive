@@ -78,7 +78,7 @@ For complete backup without errors, configure passwordless sudo for rsync:
 visudo
 
 # Add this line (replace 'foo' with your backup user)
-foo ALL=(root) NOPASSWD: /usr/bin/rsync
+foo ALL=(ALL) NOPASSWD: /usr/bin/rsync
 ```
 
 **Create rsync wrapper on remote server:**
@@ -86,12 +86,30 @@ foo ALL=(root) NOPASSWD: /usr/bin/rsync
 # Create /usr/local/bin/rsync-wrapper
 cat > /usr/local/bin/rsync-wrapper << 'EOF'
 #!/bin/sh
-exec sudo /usr/bin/rsync "$@"
+exec sudo /usr/local/bin/rsync "$@"
 EOF
-chmod 755 /usr/local/bin/rsync-wrapper
 ```
 
-Then configure your backup script to use the wrapper via SSH command override.
+```
+chmod 755 /usr/local/bin/rsync-wrapper
+```
+Add this to your configuration file. The `--rsync-path` option specifies the command that will be executed on the remote server instead of the default `rsync` binary.
+
+```
+RSYNC_CUSTOM_OPTS="--rsync-path='/usr/local/bin/rsync-wrapper' --no-xattrs --no-acls"
+```
+
+By setting `--rsync-path` to use the wrapper, you instruct rsync to:
+
+- Connect via SSH to remote server as user foo.
+- Instead of just running rsync (which would run as user foo and have limited permissions).
+- Run sudo /usr/local/bin/rsync on remote server.
+
+Because you already have this sudoers rule on remote server:
+
+```
+foo ALL=(ALL) NOPASSWD: /usr/local/bin/rsync
+```
 
 ### **Solution 4: Combined Approach (Best Practice)**
 
